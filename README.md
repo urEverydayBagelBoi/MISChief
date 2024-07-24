@@ -47,6 +47,4 @@ There currently isn't much of anything to this project, but this README will be 
 
 Dependencies are listed in the `requirements.txt` file.
 
-**The bot also requires a `.env` file that contains:**
-```DISCORD_TOKEN="TOKEN_GOES_HERE"
-```
+**The bot also requires a `.env` file that contains:** `DISCORD_TOKEN="TOKEN_GOES_HERE"`
