@@ -345,16 +345,14 @@ async def bedtime_check(user_id, channel_id=None):
 
     if is_bedtime:
         if not await poked_within(user_id, datetime.timedelta(minutes=30)):
-            logging.debug(f"bedtime_check: Decided bedtime for user {username}.
-                          Start time: {start} - End time: {end} - Current time: {local_time}")
+            logging.debug(f"bedtime_check: Decided bedtime for user {username}. Start time: {start} - End time: {end} - Current time: {local_time}")
 
             if channel_id:
                 channel = await client.fetch_channel(int(channel_id))
                 if message:
                     await channel.send(f"<@{user_id}>,\n> {message}\n*Bedtime message by {applicant}*")
                 else:
-                    await channel.send(f"<@{user_id}>, it's after {bedtime_str} in your timezone! Go to bed!
-                                       \n*Bedtime message from {applicant}*")
+                    await channel.send(f"<@{user_id}>, it's after {bedtime_str} in your timezone! Go to bed!\n*Bedtime message from {applicant}*")
                 await update_user(user_id, recent_message_type='bedtime')
 
             else:
@@ -362,8 +360,7 @@ async def bedtime_check(user_id, channel_id=None):
                 if message:
                     await user.send(f"<@{user_id}>,\n> {message}\n*Bedtime message by {applicant}*")
                 else:
-                    await user.send(f"<@{user_id}>, it's after {bedtime_str} in your timezone! Go to bed!
-                                    \nBedtime message from {applicant}")
+                    await user.send(f"<@{user_id}>, it's after {bedtime_str} in your timezone! Go to bed!\nBedtime message from {applicant}")
 
             await reset_poke_time(user_id)
 
@@ -372,8 +369,7 @@ async def bedtime_check(user_id, channel_id=None):
                 f"bedtime_check: Decided bedtime, but user was already bothered less than 30 minutes ago")
 
     else:
-        logging.debug(f"bedtime_check: Decided [underline]NOT[/] bedtime 
-                      for user {username}.", extra={"markup": True})
+        logging.debug(f"bedtime_check: Decided [underline]NOT[/] bedtime for user {username}.", extra={"markup": True})
         # console.print(f"bedtime_check: Decided [underline]NOT[/] bedtime for user {username}.")
         pass
 
@@ -388,9 +384,7 @@ async def reset_poke_time(user_id):
     # told to, and said user should be registered if so.
     if not await user_exists(user_id):
         await add_user(user_id)
-        logging.critical(f"[bold red blink]User
-                         {client.get_user(user_id).name} did not exist in database when 'reset_poke_time' was called.
-                         This means a user was bothered [underline]UNPROMPTED[/][/]", extra={"markup": True})
+        logging.critical(f"[bold red blink]User {client.get_user(user_id).name} did not exist in database when 'reset_poke_time' was called. This means a user was bothered [underline]UNPROMPTED[/][/]", extra={"markup": True})
 
     try:
         async with aiosqlite.connect(database) as conn:
@@ -470,14 +464,11 @@ async def on_message(message):
     # Log messages
     if message.author == client.user:
         # console.print(_)  <-- Not really needed since it prints logs to console anyway
-        logging.info(f"\n[black on white]{message.author}[/] [bright_black]
-                     [{(message.created_at.astimezone()).strftime("%H:%M")}][/]
-                     \n{message.content}\n", extra={"markup": True})
+        logging.info(f"\n[black on white]{message.author}[/] [bright_black][{(message.created_at.astimezone()).strftime("%H:%M")}][/]\n{message.content}\n", extra={"markup": True})
         return
     
     # console.print(_)  <-- Not really needed since it prints logs to console anyway
-    logging.info(f"[white on blue]{message.author}[/] [bright_black]
-                 [{message.created_at.strftime("%H:%M")}][/]\n{message.content}\n", extra={"markup": True})
+    logging.info(f"[white on blue]{message.author}[/] [bright_black][{message.created_at.strftime("%H:%M")}][/]\n{message.content}\n", extra={"markup": True})
 
     # if the bot is DMed or mentioned, hint to slash commands
     if isinstance(message.channel, discord.DMChannel):
@@ -539,14 +530,17 @@ async def on_message(message):
 
 @tasks.loop(minutes=5)
 async def check_all_bedtimes():
-    async with aiosqlite.connect(database) as conn:
-        async with conn.execute("SELECT id FROM subscriptions WHERE bedtime = 1") as cursor:
-            async for row in cursor:
-                user_id, = row
-                await bedtime_check(user_id)
+    try:
+        async with aiosqlite.connect(database) as conn:
+            async with conn.execute("SELECT id FROM subscriptions WHERE bedtime = 1") as cursor:
+                async for row in cursor:
+                    user_id, = row
+                    await bedtime_check(user_id)
+    except aiosqlite.Error as e:
+        # console.print("           []: {e}", style=danger_style)
+        logging.error("           ['check_all_bedtimes()' ERROR]: {e}")
 
         # COMMANDS
-
 # Functions for commands
 
 
@@ -619,8 +613,7 @@ async def gotosleep(interaction: discord.Interaction, user: discord.User, time: 
     await update_subscriptions(user.id, bedtime=1)
     response += f"Set bedtime for user ***{await get_user_data(user.id, 'username')}***:\nBedtime: **{await get_user_data(user.id, 'bedtime_time')}**\nBedtime message: **{await get_user_data(user.id, 'bedtime_message')}**\nBedtime applicant (will be credited on sending the message): **{await get_user_data(user.id, 'bedtime_applicant_username')}**"
     # DEBUG
-    response += f"\n> DEBUG:\n> Inputs:\ntime: {time}\nmessage: {message}
-    \nbedtime_applicant_username: {interaction.user.name}\n\nUser: [{user.id}]"
+    response += f"\n> DEBUG:\n> Inputs:\ntime: {time}\nmessage: {message}\nbedtime_applicant_username: {interaction.user.name}\n\nUser: [{user.id}]"
     await interaction.response.send_message(response)
 
 
@@ -652,7 +645,14 @@ async def getrecentbother(interaction: discord.Interaction, user: discord.User):
     if await user_exists(user.id):
         await interaction.response.send_message(str(await poked_within(user_id=user.id, return_difference=True)))
 
-
+# Start the bot
+create_tables()
+verify_columns(table_name='users', columns=user_columns)
+verify_columns(table_name='subscriptions', columns=subscription_columns)
 # Can optionally be substituted for running the bot manually
-client.run(TOKEN, log_handler=discord_logger,
-           log_level=logging.NOTSET, root_logger=False)
+client.run(
+    token=TOKEN,
+    log_handler=discord_logger,
+    log_level=logging.NOTSET,
+    root_logger=False
+    )

@@ -15,6 +15,7 @@ There currently isn't much of anything to this project, but this README will be 
     git clone https://github.com/yourusername/your-repo.git
     cd your-repo
     ```
+    There are more ways to do this though, like through GitHub's desktop app.
 
 2. Create a virtual environment:
     ```sh
@@ -45,3 +46,7 @@ There currently isn't much of anything to this project, but this README will be 
 ## Dependencies
 
 Dependencies are listed in the `requirements.txt` file.
+
+**The bot also requires a `.env` file that contains:**
+```DISCORD_TOKEN="TOKEN_GOES_HERE"
+```
