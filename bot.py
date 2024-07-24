@@ -5,7 +5,6 @@
 # 'shut up' command and other essential anti-nuisance stuff
 # per server/guild preferences, like disabling funnies for an entire server
 # a guided server setup for the above
-# make pycodestyle compliant
 
 
 import aiosqlite
