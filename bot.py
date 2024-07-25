@@ -1,11 +1,11 @@
 # bot.py
 # welcome to probably the worst code you've seen in your life (. ❛ ᴗ ❛.)
+# please note i am a complete beginner and neurodivergent so sorry if some things make zero sense
 
 # TO DO:
 # 'shut up' command and other essential anti-nuisance stuff
 # per server/guild preferences, like disabling funnies for an entire server
-# a guided server setup for the above
-
+# optimize code by minimizing unnecessary database calls (write to variable and use that instead)
 
 import aiosqlite
 import sqlite3
@@ -19,7 +19,8 @@ import math
 import re  # Useful for reformatting strings
 import random
 import os
-from zoneinfo import ZoneInfo # Note that this library requires timezone data (usually from the 'tzdata' package installed seperately)
+# Note that ZoneInfo requires timezone data (usually from the 'tzdata' package installed seperately)
+from zoneinfo import ZoneInfo
 import zoneinfo
 import datetime
 # Main (Discord networking lib)
@@ -31,10 +32,12 @@ from discord.ext import tasks
 client = discord.Client(intents=discord.Intents.all())
 tree = app_commands.CommandTree(client)
 
+
 def remove_formatting(text):  # Removes Discord/Markdown formatting
     return re.sub(r"[*_`~]", "", text)
 
-def timezone_to_utc(timezone=str):
+
+def timezone_to_utc(timezone: str):
     offset = datetime.datetime.now(ZoneInfo(timezone)).utcoffset(
     ).total_seconds()/60/60  # this is in fractional hours
 
@@ -166,10 +169,9 @@ async def verify_columns(table_name, columns):
             console.bell()
 
 
-async def add_user(user_id, username: str = None):
+async def add_user(user_id):
     try:
-        if not username:
-            username = client.fetch_user(user_id).name
+        username = (await client.fetch_user(user_id)).name
 
         async with aiosqlite.connect(database) as conn:
             # Insert user
@@ -345,7 +347,8 @@ async def bedtime_check(user_id, channel_id=None):
 
     if is_bedtime:
         if not await poked_within(user_id, datetime.timedelta(minutes=30)):
-            logging.debug(f"bedtime_check: Decided bedtime for user {username}. Start time: {start} - End time: {end} - Current time: {local_time}")
+            logging.debug(f"bedtime_check: Decided bedtime for user {username}. Start time: {
+                          start} - End time: {end} - Current time: {local_time}")
 
             if channel_id:
                 channel = await client.fetch_channel(int(channel_id))
@@ -369,7 +372,8 @@ async def bedtime_check(user_id, channel_id=None):
                 f"bedtime_check: Decided bedtime, but user was already bothered less than 30 minutes ago")
 
     else:
-        logging.debug(f"bedtime_check: Decided [underline]NOT[/] bedtime for user {username}.", extra={"markup": True})
+        logging.debug(f"bedtime_check: Decided [underline]NOT[/] bedtime for user {
+                      username}.", extra={"markup": True})
         # console.print(f"bedtime_check: Decided [underline]NOT[/] bedtime for user {username}.")
         pass
 
@@ -384,14 +388,17 @@ async def reset_poke_time(user_id):
     # told to, and said user should be registered if so.
     if not await user_exists(user_id):
         await add_user(user_id)
-        logging.critical(f"[bold red blink]User {client.get_user(user_id).name} did not exist in database when 'reset_poke_time' was called. This means a user was bothered [underline]UNPROMPTED[/][/]", extra={"markup": True})
+        logging.critical(
+            f"[bold red blink]User {client.get_user(user_id).name} did not exist in database when 'reset_poke_time' was called."
+            "This means a user was bothered [underline]UNPROMPTED[/][/]",
+            extra={"markup": True}
+        )
 
     try:
         async with aiosqlite.connect(database) as conn:
             await conn.execute("UPDATE users SET recently_bothered = unixepoch() WHERE id = ?", (user_id,))
             await conn.commit()
     except aiosqlite.Error as e:
-        conn.rollback()
         # console.print("           ['reset_poke_time' UPDATE ERROR]: {e}", style=danger_style)
         logging.error("           ['reset_poke_time' UPDATE ERROR]: {e}")
         console.bell()
@@ -444,7 +451,8 @@ async def on_ready():
     await tree.sync()
     check_all_bedtimes.start()
     logging.info(
-        f"[bright_magenta bold]    || [Ready. Logged in as {client.user}] ||\n")
+        f"[bright_magenta]    || [Ready. Logged in as {client.user}] ||\n",
+        extra={"markup": True})
 
 greeting_prompts = ('hello', 'hi', 'salutations', 'helo', 'hai',
                     'greetings', 'hey', 'heey', 'hallo', 'sup', 'hoi', 'howdy')
@@ -464,11 +472,13 @@ async def on_message(message):
     # Log messages
     if message.author == client.user:
         # console.print(_)  <-- Not really needed since it prints logs to console anyway
-        logging.info(f"\n[black on white]{message.author}[/] [bright_black][{(message.created_at.astimezone()).strftime("%H:%M")}][/]\n{message.content}\n", extra={"markup": True})
+        logging.info(f"\n[black on white]{message.author}[/] [bright_black][{
+                     (message.created_at.astimezone()).strftime("%H:%M")}][/]\n{message.content}\n", extra={"markup": True})
         return
-    
+
     # console.print(_)  <-- Not really needed since it prints logs to console anyway
-    logging.info(f"[white on blue]{message.author}[/] [bright_black][{message.created_at.strftime("%H:%M")}][/]\n{message.content}\n", extra={"markup": True})
+    logging.info(f"[white on blue]{message.author}[/] [bright_black][{
+                 message.created_at.strftime("%H:%M")}][/]\n{message.content}\n", extra={"markup": True})
 
     # if the bot is DMed or mentioned, hint to slash commands
     if isinstance(message.channel, discord.DMChannel):
@@ -579,41 +589,58 @@ async def timezone_autocomplete(interaction: discord.Interaction, current: str):
 async def gotosleep(interaction: discord.Interaction, user: discord.User, time: str, timezone: str = None, message: str = None):
     # check if user exists in database and add them to users table otherwise
     if not await user_exists(user.id):
-        await add_user(user.id, user.name)
+        await add_user(user.id)
         logging.debug(
             f"User {user.name} did not exist in database, attempted to add.")
 
-    response = ""
-
-    if timezone != None:
-        if timezone not in zoneinfo.available_timezones():
-            interaction.response.send_message(f"Invalid timezone: {timezone}")
-            return
-
-        elif await get_user_data(user.id, 'timezone') != None:
-            response += f"User already has timezone {await get_user_data(user.id, 'timezone')} registered. Setting bedtime to {time} in that timezone.\n\n"
-        else:
-            # 1 for bool as registered in database
-            await update_user(user.id, timezone=timezone, timezone_private=1)
-            logging.debug("gotosleep: Attempted to update user timezone")
-
-    if await get_user_data(user.id, 'timezone') not in zoneinfo.available_timezones():
-        await interaction.response.send_message(f"User does not have a timezone registered (nor was one specified)")
-        return
-
-    if datetime.datetime.strptime(time, "%H:%M").time():
-        pass
+    
+    try:
+        _ = datetime.datetime.strptime(time, "%H:%M").time()
         logging.debug(f"gotosleep: Time {time} was considered valid.")
-    else:
-        await interaction.response.send_message(f"Time ``{time}`` isn't formatted correctly.")
+    except ValueError:
+        await interaction.response.send_message(f"Time `{time}` isn't formatted correctly.")
         return
 
+    if timezone is not None:
+        if timezone not in zoneinfo.available_timezones():
+            await interaction.response.send_message(f"Invalid timezone: {timezone}")
+            return
+        await update_user(user.id, timezone=timezone, timezone_private=1)
+        logging.debug("gotosleep: Attempted to update user timezone")
+        
+    # user_data = await get_user_data(user.id, 'timezone', 'timezone_private')
+    registered_timezone, timezone_private = await get_user_data(
+        user.id,
+        'timezone',
+        'timezone_private'
+    )
+    
+    if registered_timezone is None and timezone is None:
+        await interaction.response.send_message(f"User does not have a timezone registered (nor was one specified).")
+        return
+    
+    response = ""
+    if registered_timezone not in zoneinfo.available_timezones():
+        response += f"User had invalid timezone {registered_timezone} registered. Setting timezone to `{timezone_to_utc(registered_timezone)}`\n-# new timezone converted to UTC offset for privacy reasons"
+    else:
+        response += f"User already has timezone {registered_timezone} registered. Setting"
+        
     await update_user(user.id, bedtime_time=time, bedtime_message=message, bedtime_applicant_username=interaction.user.name)
-    # 1 for true as stored in database
     await update_subscriptions(user.id, bedtime=1)
-    response += f"Set bedtime for user ***{await get_user_data(user.id, 'username')}***:\nBedtime: **{await get_user_data(user.id, 'bedtime_time')}**\nBedtime message: **{await get_user_data(user.id, 'bedtime_message')}**\nBedtime applicant (will be credited on sending the message): **{await get_user_data(user.id, 'bedtime_applicant_username')}**"
-    # DEBUG
-    response += f"\n> DEBUG:\n> Inputs:\ntime: {time}\nmessage: {message}\nbedtime_applicant_username: {interaction.user.name}\n\nUser: [{user.id}]"
+    
+    username, time, message, applicant_username = await get_user_data(
+        user.id,
+        'username',
+        'bedtime_time',
+        'bedtime_message',
+        'bedtime_applicant_username'
+    )
+    response += (
+        f"Registered bedtime for user ***{username}***:\n"
+        f"Bedtime: **{time}**\n"
+        f"Bedtime message: **{message}**\n"
+        f"Bedtime applicant (will be credited on sending the message): **{applicant_username}**"
+    )
     await interaction.response.send_message(response)
 
 
@@ -655,4 +682,4 @@ client.run(
     log_handler=discord_logger,
     log_level=logging.NOTSET,
     root_logger=False
-    )
+)
