@@ -1,6 +1,7 @@
 # bot.py
 # welcome to probably the worst code you've seen in your life (. ❛ ᴗ ❛.)
 # please note i am a complete beginner so sorry if some things make zero sense
+from datetime import tzinfo
 
 # TODO:
 # 'shut up' command and other essential anti-nuisance stuff
@@ -59,6 +60,7 @@ def timezone_to_utc(timezone:str):
 # Loading bot token from environment variables pulled from '.env' file
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
+database = os.getenv('USERDBPATH')
 
 # discord.py attaches to this for logging
 discord_logger = logging.FileHandler(
@@ -68,14 +70,11 @@ discord_logger = logging.FileHandler(
 console = rich.console.Console()
 _FORMAT = "%(message)s"
 logging.basicConfig(
-    level="NOTSET", format=_FORMAT, datefmt="[%X]", handlers=[RichHandler(rich_tracebacks=True)]
+    level="NOTSET", format=_FORMAT, datefmt="[%X]", handlers=[RichHandler(level=logging.INFO, rich_tracebacks=True)]
 )
 
-# Relative path to .db file that stores user is entered here... should probably change that...
-database = 'testing.db'
-
-# These are synchronous (non-async) and are only used for important one off things
-# like creating, setting up and verifying the database itself.
+# These are synchronous (non-async) and are only used for global tasks
+# like creating, setting up and verifying the database itself and doing a mass check of users.
 syncConn = sqlite3.connect(database)
 syncCursor = syncConn.cursor()
 
@@ -139,14 +138,14 @@ subscription_columns = {
 
 
 async def add_user(user_id):
-    async with aiosqlite.connect(database) as conn:
+    async with (aiosqlite.connect(database) as conn):
         try:
             # Insert user
             username = (await client.fetch_user(user_id)).name
             await conn.execute('''INSERT INTO users (id, username) VALUES (?, ?)''', (user_id, username))
             # Insert subscriptions
             await conn.execute('''INSERT INTO subscriptions (id) VALUES (?)''', (user_id,))
-
+            await conn.commit()
         except aiosqlite.Error as e:
             # rollback on error
             await conn.rollback()
@@ -182,6 +181,7 @@ def verify_columns(table_name, columns):
 
 async def update_user(user_id, **kwargs):
     if not kwargs:
+        logging.error('update_user(): no kwargs were passed.')
         return
 
     # check if user exists in database, and add them to users table otherwise
@@ -236,16 +236,13 @@ async def delete_user(user_id):
         return
 
     try:
-        with aiosqlite.connect(database) as conn:
+        async with aiosqlite.connect(database) as conn:
             await conn.execute('DELETE FROM users WHERE id = ?', (user_id,))
     except aiosqlite.Error as e:
         logging.error(f'           [DATABASE DELETE USER ERROR]: {e}')
         console.bell()
 
 async def is_subscribed(user_id, subscription):
-    if not await user_exists(user_id):
-        return
-
     try:
         async with aiosqlite.connect(database) as conn:
             async with conn.execute("SELECT ? FROM subscriptions WHERE id = ?", (subscription, user_id)) as cursor:
@@ -298,8 +295,11 @@ async def get_user_data(user_id, *args):
 
 
 async def bedtime_check(user_id, channel_id=None):
-    if not await user_exists(user_id):
+    if not await user_exists(user_id) or not await is_subscribed(user_id, 'bedtime'):
         logging.warning(f"bedtime_check attempted for user [{user_id}], but id not present in users table.")
+        return
+    if await poked_within(user_id, datetime.timedelta(minutes=15)):
+        logging.info('bedtime_check(): user was bothered within 15 minutes from now, skipping bedtime check.')
         return
 
     timezone_str, bedtime_str, username, message, applicant = await get_user_data(user_id, 'timezone', 'bedtime_time',
@@ -319,32 +319,24 @@ async def bedtime_check(user_id, channel_id=None):
         is_bedtime = now >= start or now <= end
 
     if is_bedtime:
-        if not await poked_within(user_id, datetime.timedelta(minutes=15)):
-            logging.info(
-                f"bedtime_check: Decided bedtime for user {username}. Start time: {start} - End time: {end} - Current time: {local_time}")
-
-            if channel_id:
-                channel = await client.fetch_channel(int(channel_id))
-                if message:
-                    await channel.send(f"<@{user_id}>,\n> {message}\n*Bedtime message by {applicant}*")
-                else:
-                    await channel.send(
-                        f"<@{user_id}>, it's after {bedtime_str} in your timezone! Go to bed!\n*Bedtime message from {applicant}*")
-                await update_user(user_id, recent_message_type='bedtime')
-
+        logging.info(
+            f"bedtime_check: Decided bedtime for user {username}. Start time: {start} - End time: {end} - Current time: {local_time}")
+        if channel_id:
+            channel = await client.fetch_channel(int(channel_id))
+            if message:
+                await channel.send(f"<@{user_id}>,\n> {message}\n*Bedtime message by {applicant}*")
             else:
-                user = client.get_user(user_id)
-                if message:
-                    await user.send(f"<@{user_id}>,\n> {message}\n*Bedtime message by {applicant}*")
-                else:
-                    await user.send(
-                        f"<@{user_id}>, it's after {bedtime_str} in your timezone! Go to bed!\nBedtime message from {applicant}")
-
-            await reset_poke_time(user_id)
-
+                await channel.send(
+                    f"<@{user_id}>, it's after {bedtime_str} in your timezone! Go to bed!\n*Bedtime message from {applicant}*")
+            await update_user(user_id, recent_message_type='bedtime')
         else:
-            logging.info(
-                f"bedtime_check: Decided bedtime, but user was already bothered less than 15 minutes ago")
+            user = client.get_user(user_id)
+            if message:
+                await user.send(f"<@{user_id}>,\n> {message}\n*Bedtime message by {applicant}*")
+            else:
+                await user.send(
+                    f"<@{user_id}>, it's after {bedtime_str} in your timezone! Go to bed!\nBedtime message from {applicant}")
+        await reset_poke_time(user_id)
 
     else:
         logging.info(f"bedtime_check: Decided [underline]NOT[/] bedtime for user {username}.", extra={"markup": True})
@@ -424,7 +416,12 @@ async def on_ready():
     logging.info(
         f"[bright_magenta]    || [Ready. Logged in as {client.user}] ||\n",
         extra={"markup": True})
+    logging.info(f"Database path: {database}")
 
+@client.event
+async def on_close():
+    syncConn.close()
+    syncCursor.close()
 
 greeting_prompts = ('hello', 'hi', 'salutations', 'helo', 'hai',
                     'greetings', 'hey', 'heey', 'hallo', 'sup', 'hoi', 'howdy')
@@ -516,16 +513,27 @@ async def on_message(message):
 
 
 # TODO: Make this use single synchronous connection instead of making a new asynchronous one.
+# @tasks.loop(minutes=5)
+# async def check_all_bedtimes():
+#     try:
+#         async with aiosqlite.connect(database) as conn:
+#             async with conn.execute("SELECT id FROM subscriptions WHERE bedtime = 1") as cursor:
+#                 async for row in cursor:
+#                     user_id, = row
+#                     await bedtime_check(user_id)
+#     except aiosqlite.Error as e:
+#         logging.error(f'           [\'check_all_bedtimes()\' ERROR]: {e}')
+
 @tasks.loop(minutes=5)
 async def check_all_bedtimes():
     try:
-        async with aiosqlite.connect(database) as conn:
-            async with conn.execute("SELECT id FROM subscriptions WHERE bedtime = 1") as cursor:
-                async for row in cursor:
-                    user_id, = row
-                    await bedtime_check(user_id)
-    except aiosqlite.Error as e:
+        syncCursor.execute("SELECT id FROM subscriptions WHERE bedtime = 1")
+        for row in syncCursor:
+            user_id, = row
+            await bedtime_check(user_id)
+    except sqlite3.Error as e:
         logging.error(f'           [\'check_all_bedtimes()\' ERROR]: {e}')
+
 
         # COMMANDS
 
@@ -585,6 +593,9 @@ async def gotosleep(interaction:discord.Interaction,user:discord.User,time:str,t
         logging.info(f"gotosleep: Time {time} was considered valid.")
     except ValueError:
         await interaction.response.send_message(f"Time `{time}` isn't formatted correctly.")
+        return
+    except TypeError:
+        logging.info(f"gotosleep: User had no bedtime registered")
         return
 
     if timezone is not None:
@@ -685,7 +696,74 @@ async def getusertime(interaction: discord.Interaction, user: discord.User):
         timezone_str = await get_user_data(user.id, 'timezone')
         if timezone_str:
             timezone = ZoneInfo(timezone_str)
-            await interaction.response.send_message(str(datetime.datetime.now().astimezone(timezone)))
+            await interaction.response.send_message(f"It's {(datetime.datetime.now().astimezone(timezone)).strftime('%c')} for {user.name}")
+        else:
+            await interaction.response.send_message("User does not have a timezone registered.")
+    else:
+        await interaction.response.send_message("User doesn't exist in database.")
+
+
+@tree.command(
+    name="convertusertime",
+    description="Converts a time in your time zone to the equivalent time in theirs, if they have set a time zone."
+)
+@app_commands.describe(time="Format: [HOUR]:[MINUTE] (24-hour, devided by a ':')", timezone="Own/source timezone (if you haven't saved it already)")
+@app_commands.autocomplete(timezone=timezone_autocomplete)
+async def convertusertime(interaction: discord.Interaction, user: discord.User, time: str, timezone: str=None):
+    if timezone and timezone not in zoneinfo.available_timezones():
+        await interaction.response.send_message(f"Invalid timezone: {timezone}")
+    if await user_exists(user.id):
+        target_timezone_str = await get_user_data(user.id, 'timezone')
+        if target_timezone_str:
+            if target_timezone_str not in zoneinfo.available_timezones():
+                await interaction.response.send_message("Target user timezone invalid! (report this to my dev)")
+                return
+            if not timezone:
+                source_timezone_str = await get_user_data(interaction.user.id, 'timezone')
+                if not source_timezone_str:
+                    await interaction.response.send_message("You don't have a timezone registered, nor was a source timezone specified.")
+                    return
+            else:
+                source_timezone_str = timezone
+
+            target_timezone = ZoneInfo(target_timezone_str)
+            source_timezone = ZoneInfo(source_timezone_str)
+            source_time = datetime.datetime.strptime(target_timezone_str, "%H:%M", tzinfo=source_timezone).time()
+            converted_time = source_time.astimezone(target_timezone)
+            await interaction.response.send_message(converted_time)
+        else:
+            await interaction.response.send_message("Target user does not have a timezone registered.")
+    else:
+        await interaction.response.send_message("Target user doesn't exist in database.")
+
+
+@tree.command(
+    name="settimezone",
+    description="Registers your timezone in the bot's database."
+)
+@app_commands.describe(timezone="Timezone list: https://zones.arilyn.cc/",private="Whether full timezone or only UTC offset is public")
+@app_commands.autocomplete(timezone=timezone_autocomplete)
+async def settimezone(interaction: discord.Interaction, timezone: str, private: bool):
+    # check if user exists in database and add them to users table otherwise
+    if not await user_exists(interaction.user.id):
+        await add_user(interaction.user.id)
+        logging.info(
+            f"User {interaction.user.name} did not exist in database, attempted to add.")
+
+    if timezone not in zoneinfo.available_timezones():
+        await interaction.response.send_message(f"Invalid timezone: {timezone}")
+        return
+
+    try:
+        await update_user(interaction.user.id, timezone=timezone, timezone_private=private)
+        logging.info("settimezone: Attempted to update user timezone")
+        await interaction.response.send_message(f"Set timezone to `{timezone}`.")
+    except aiosqlite.Error as e:
+        await interaction.response.send_message(f"Setting timezone failed! :( (report this to my dev)\n`{e}`")
+
+
+
+
 
 
 # Start the bot

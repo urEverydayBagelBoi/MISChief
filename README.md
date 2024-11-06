@@ -12,8 +12,8 @@ There currently isn't much of anything to this project, but this README will be 
 1. Clone the repository:
     For example:
     ```sh
-    git clone https://github.com/yourusername/your-repo.git
-    cd your-repo
+    git clone https://github.com/urEverydayBagelBoi/MISChief.git
+    cd MISChief
     ```
     There are more ways to do this though, like through GitHub's desktop app.
 
@@ -47,4 +47,4 @@ There currently isn't much of anything to this project, but this README will be 
 
 Dependencies are listed in the `requirements.txt` file.
 
-**The bot also requires a `.env` file that simply contains:** `DISCORD_TOKEN="TOKEN_GOES_HERE"`. Simply create a text file, enter that with your token, and rename the file **entirely**, ***including*** **the extension**, to just `.env`
+**The bot also requires a `.env` file that simply contains:** `DISCORD_TOKEN="token_goes_here"` and `USERDBPATH="path_goes_here"` on separate lines. Simply create a text file, enter that with your token and (full or relative) path to where you have or want your database file (will create one automatically if it doesn't exist), and rename the file **entirely**, ***including*** **the extension**, to just `.env`
