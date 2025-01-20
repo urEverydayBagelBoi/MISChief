@@ -40,8 +40,13 @@ There currently isn't much of anything to this project, but this README will be 
 
 5. Run the bot:
     ```sh
-    python your_bot_file.py
+    python bot.py
     ```
+    or
+   ```sh
+   python3 bot.py
+   ```
+   ^^^ On Linux
 
 ## Dependencies
 
