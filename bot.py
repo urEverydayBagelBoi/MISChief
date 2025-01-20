@@ -1,12 +1,15 @@
 # bot.py
 # welcome to probably the worst code you've seen in your life (. ❛ ᴗ ❛.)
 # please note i am a complete beginner so sorry if some things make zero sense
-from datetime import tzinfo
+# from datetime import tzinfo, timedelta
+# from types import NoneType
+from operator import contains
 
 # TODO:
-# 'shut up' command and other essential anti-nuisance stuff
 # per server/guild preferences, like disabling funnies for an entire server
-# optimize code by minimizing unnecessary database calls (write to variable and use that instead)
+# make respond to 'you know what that means' with 'fish orgy' if the channel its sent in is NSFW
+# use discord.utils.format_dt()
+# make word prompts use contains_word() instead of 'word in str'
 
 import aiosqlite
 import sqlite3
@@ -16,7 +19,7 @@ import rich.console
 # from rich import print
 import logging
 from dotenv import load_dotenv
-import math
+# import math
 import re
 import random
 import os
@@ -43,18 +46,17 @@ def timezone_to_utc(timezone:str):
     if timezone is None:
         logging.warning(f'    timezone_to_utc(): got {timezone} as input. Returning.')
         return
-
     logging.info(f'    timezone_to_utc(): got {timezone} as input.')
-    offset = datetime.datetime.now(ZoneInfo(timezone)).utcoffset().total_seconds() / 60 / 60  # this evaluates in fractional hours
-
-    hours = math.floor(abs(offset))
-    minutes = int((abs(offset) - hours) * 60)
-    if offset < 0:
-        logging.info(f'     timezone_to_utc(): converted timezone {timezone} to UTC-{hours}:{minutes}')
-        return f"UTC-{hours}:{minutes}"
+    offset = datetime.datetime.now(ZoneInfo(timezone)).utcoffset()
+    logging.info(f'     timezone_to_utc(): converted timezone {timezone} to UTC{offset}')
+    if offset.total_seconds() < 0:
+        return f"UTC{offset}"
     else:
-        logging.info(f'     timezone_to_utc(): converted timezone {timezone} to UTC+{hours}:{minutes}')
-        return f"UTC+{hours}:{minutes}"
+        return f"UTC+{offset}"
+
+# Finds a word in a string (that isn't part of a word or anything)
+def contains_word(s, w):
+    return f' {w} ' in f' {s} '
 
 
 # Loading bot token from environment variables pulled from '.env' file
@@ -102,6 +104,7 @@ def create_tables():
     	    "id"	INTEGER NOT NULL UNIQUE,
     	    "bedtime"	INTEGER NOT NULL DEFAULT 0,
     	    "funnies"	INTEGER NOT NULL DEFAULT 1,
+    	    "shutup"    INTEGER NOT NULL DEFAULT 0,
     	    FOREIGN KEY("id") REFERENCES "users"("id") ON DELETE CASCADE,
     	    PRIMARY KEY("id")
         );  
@@ -134,6 +137,7 @@ subscription_columns = {
     'bedtime': 'INTEGER NOT NULL DEFAULT 0',  # bedtime reminders
     # responses to funny numbers and other stupid unprompted stuff
     'funnies': 'INTEGER NOT NULL DEFAULT 1',
+    'shutup': 'INTEGER NOT NULL DEFAULT 0',
 }
 
 
@@ -209,15 +213,11 @@ async def update_subscriptions(user_id, **kwargs):
     if not kwargs:
         return
 
-    # check if user exists in database, and add them to users table otherwise
-    if not await user_exists(user_id):
-        await add_user(user_id)
-        user = await client.fetch_user(user_id)
-        logging.info(f"User {user.name} did not exist in database, attempted to add.")
-
     # construct the set clause dynamically
     set_clause = ', '.join(f"{key} = ?" for key in kwargs.keys())
-    values = list(kwargs.values())
+    values = list()
+    for value in kwargs.values():
+        values.append(int(value)) # convert bool to int
     values.append(user_id)
     sql = f"UPDATE subscriptions SET {set_clause} WHERE id = ?"
 
@@ -245,8 +245,16 @@ async def delete_user(user_id):
 async def is_subscribed(user_id, subscription):
     try:
         async with aiosqlite.connect(database) as conn:
-            async with conn.execute("SELECT ? FROM subscriptions WHERE id = ?", (subscription, user_id)) as cursor:
-                return not not (await cursor.fetchone())
+            query = f"SELECT {subscription} FROM subscriptions WHERE id = ?"
+            async with conn.execute(query, (user_id,)) as cursor:
+                value = await cursor.fetchone()
+                if value is None:
+                    return False
+                value = value[0]
+                logging.info(f'is_subscribed():  Got subscription [{subscription}] for user [{user_id}]: {value}')
+                return bool(value)
+
+
     except aiosqlite.Error as e:
         logging.error(f'           [DATABASE SUBSCRIPTION RETRIEVAL ERROR]: {e}')
         console.bell()
@@ -257,7 +265,7 @@ async def user_exists(user_id):
         async with aiosqlite.connect(database) as conn:
             async with conn.execute('SELECT COUNT(*) FROM users WHERE id = ?', (user_id,)) as cursor:
                 data = (await cursor.fetchone())[0]
-                return not not data  # transforms to bool
+                return bool(data)
     except aiosqlite.Error as e:
         logging.error(f"           [USER EXISTS VERIFICATION ERROR]: {e}")
         console.bell()
@@ -295,9 +303,6 @@ async def get_user_data(user_id, *args):
 
 
 async def bedtime_check(user_id, channel_id=None):
-    if not await user_exists(user_id) or not await is_subscribed(user_id, 'bedtime'):
-        logging.warning(f"bedtime_check attempted for user [{user_id}], but id not present in users table.")
-        return
     if await poked_within(user_id, datetime.timedelta(minutes=15)):
         logging.info('bedtime_check(): user was bothered within 15 minutes from now, skipping bedtime check.')
         return
@@ -397,7 +402,7 @@ async def poked_within(user_id, timedelta: datetime.timedelta = None, return_dif
                 elif timedelta:
                     return recent
                 elif return_difference:
-                    difference
+                    return difference
                 else:
                     raise ValueError(
                         "'poked_within' must be given either a timedelta, True for return_difference, or both.")
@@ -418,6 +423,7 @@ async def on_ready():
         extra={"markup": True})
     logging.info(f"Database path: {database}")
 
+
 @client.event
 async def on_close():
     syncConn.close()
@@ -427,59 +433,99 @@ greeting_prompts = ('hello', 'hi', 'salutations', 'helo', 'hai',
                     'greetings', 'hey', 'heey', 'hallo', 'sup', 'hoi', 'howdy')
 greeting_responses = ['hiii :3', 'sup!', 'helo!!!',
                       'haiii!!!!', 'hi', 'hello world!!!', 'mrrowdy!!']
+shutup_users = {} # if shut up is used they are remembered in this cache for 5 minutes and then deleted if they do not confirm
+shutup_prompts = ['shut up', 'stfu', 'su', 'shut the fuck up', 'stop']
+shutup_responses = ['awww okay :<', 'okay :(', 'oh okay :3', 'okay fine', 'ughhh whatever :rolling_eyes:']
 fish_prompts = ('you know what that means', 'fish')
 fish = '🐟'
 two_emoji = '2️⃣'
 one_emoji = '1️⃣'
 twentyone_prompts = ("whats 9 plus 10", "what's 9 plus 10", "whats 9 + 10", "what's 9 + 10",
                      "whats nine plus ten", "what's nine plus ten", "whats nine + ten", "what's nine + ten")
-keywords = ["727", "69", "420"]
+keywords = ['727', '69', '420', '42', 'auto', 'car', 'audi', 'kip']
 
 
 @client.event
 async def on_message(message):
-    # Log messages
+    # Log messages (and return if message is from own client)
     if message.author == client.user:
         logging.info(
             f"\n[black on white]{message.author}[/] [bright_black][{(message.created_at.astimezone()).strftime('%H:%M')}][/]\n{message.content}\n",
             extra={"markup": True})
         return
-
     logging.info(
         f"[white on blue]{message.author}[/] [bright_black][{message.created_at.strftime('%H:%M')}][/]\n{message.content}\n",
         extra={"markup": True})
 
-    # if the bot is DMed or mentioned, hint to slash commands
+
+    # if the bot is DMed or mentioned, hint to slash commands (unless message is a text prompt response)
     if isinstance(message.channel, discord.DMChannel):
         if (message.content.lower()).startswith(greeting_prompts):
             await message.channel.send(
                 f"{random.choice(greeting_responses)}\n> *pssst! i work with slash commands, type '/' to continue!*")
         else:
-            await message.channel.send(f"> *pssst! i work with slash commands, type '/' to continue!*")
-    if client.user.mention in message.content and not 'shut up' in message.content.lower():
+            if (any(contains_word(message.content.lower(), prompt)) for prompt in shutup_prompts) or message.content.lower() == 'confirm':
+                pass
+            else:
+                await message.channel.send(f"> *pssst! i work with slash commands, type '/' to continue!*")
+    if client.user.mention in message.content and not (any(contains_word(message.content.lower(), prompt)) for prompt in shutup_prompts):
         await message.reply(
             f"{random.choice(greeting_responses)}\n> *pssst! i work with slash commands, type '/' to continue!*",
             mention_author=True)
 
-    # Funnie responses
-    if await is_subscribed(message.author.id, 'funnies') or not await user_exists(message.author.id):
-        logging.info('user was subscribed to funnies. commencing the funny')
-        for prompt in fish_prompts:
-            if prompt in message.content.lower():
-                await update_user(message.author.id, recent_message_type='funnies')
-                await message.add_reaction(fish)
-                await message.reply("**fish!**", mention_author=True)
 
-        for prompt in twentyone_prompts:
-            if prompt in message.content.lower():
-                await update_user(message.author.id, recent_message_type='funnies')
-                await message.add_reaction(two_emoji)
-                await message.add_reaction(one_emoji)
+    # shut up if the bot is told to
+    if message.content.lower() == 'confirm' and message.author.id in shutup_users:
+        shutup_users.pop(message.author.id, None)
+        await message.reply(f"Got it, I won't bother you with any nonsense.\n You can re-enable funny stuff by using /nvm.")
+        if not await user_exists(message.author.id):
+            await add_user(message.author.id)
+        await update_subscriptions(message.author.id, funnies=False, bedtime=False, shutup=True)
+    elif message.author.id in shutup_users and not 'confirm' in message.content.lower():
+        shutup_users.pop(message.author.id, None)
+
+    for id, time in shutup_users.items():
+        if time > datetime.datetime.utcnow() - datetime.timedelta(minutes=5):
+            shutup_users.pop(id, None)    # forget user after 5 minutes
+
+    _messages = [msg async for msg in message.channel.history(limit=2)]
+    if len(_messages) < 2:
+        second_recent_message = None
+    else:
+        second_recent_message = _messages[1]
+
+    if ( # check if message directed at MISChief
+            isinstance(message.channel, discord.DMChannel) or client.user.mention in message.content
+            or (message.reference and client.user.mention in message.reference.resolved.content)
+            or (message.reference and message.reference.resolved.author.id == client.user.id)
+    ) and any(contains_word(message.content.lower(), prompt) for prompt in shutup_prompts):
+        shutup_users[message.author.id] = datetime.datetime.utcnow()
+        await message.reply(f"{random.choice(shutup_responses)}\n**Are you sure?**\n-# Type 'confirm' to confirm.")
+
+
+    # Funnie responses
+    if not await user_exists(message.author.id) or await is_subscribed(message.author.id, 'funnies'):
+        logging.info('user was subscribed to funnies. commencing the funny')
+
+        if any(contains_word(message.content.lower(), prompt) for prompt in fish_prompts):
+            await update_user(message.author.id, recent_message_type='funnies')
+            await message.add_reaction(fish)
+            await message.reply("**fish!**", mention_author=True)
+            logging.info(f"{message.author} got fished")
+
+        if any(contains_word(message.content.lower(), prompt) for prompt in twentyone_prompts):
+            await update_user(message.author.id, recent_message_type='funnies')
+            await message.add_reaction(two_emoji)
+            await message.add_reaction(one_emoji)
+            logging.info(f"{message.author} asked what 9 + 10 is")
 
         # pointing out various keywords, like funnie numbers
         _response = ""
         for keyword in keywords:
             if keyword in message.content:
+                if keyword in ['audi', 'auto', 'car']:
+                    if not message.author.id == 1037620054721835029:
+                        return
                 logging.info('FUNNIE DETECTED')
                 # split message into sentences
                 sentences = re.split(r'(?<=[.!?]) +', message.content)
@@ -493,9 +539,15 @@ async def on_message(message):
                             keyword, f" ***{keyword}*** ")
                         _response += f"> {highlighted_sentence}\n"
                         if keyword == '727':
-                            _response += 'WYSI\n'
+                            _response += 'WYSI\n\n'
                         if keyword == '69' or keyword == '420':
-                            _response += 'nice\n'
+                            _response += 'nice\n\n'
+                        if keyword == '42':
+                            _response += 'the answer to life, the universe and everything.\n\n'
+                        if (keyword == 'auto' or keyword == 'car' or keyword == 'audi') and message.author.id == 1037620054721835029:
+                            _response += 'met koelkast? :)\n\n'
+                        if keyword == 'kip':
+                            _response += 'het meest veelzijdige stukje vleest taar- vis!- **kut**.\n\n'
         if _response != "":
             await message.reply(_response, mention_author=False)
             await update_user(message.author.id, recent_message_type='funnies')
@@ -503,16 +555,7 @@ async def on_message(message):
     if await is_subscribed(message.author.id, 'bedtime'):
         await bedtime_check(message.author.id, message.channel.id)
 
-    if client.user in message.mentions and ('shut up' in message.content.lower() or 'su' in message.content.lower()):
-        # console.print("[magenta] Was told to shut up.")
-        logging.info("[magenta] Was told to shut up.")
-        recent_message_type = await get_user_data(message.author.id, 'recent_message_type')
-        # for false
-        await update_subscriptions(message.author.id, recently_bothered=0)
-        await message.reply(f"ok :,3\n*(I will no longer bother you with messages of type ``{recent_message_type}``)*")
 
-
-# TODO: Make this use single synchronous connection instead of making a new asynchronous one.
 # @tasks.loop(minutes=5)
 # async def check_all_bedtimes():
 #     try:
@@ -524,7 +567,7 @@ async def on_message(message):
 #     except aiosqlite.Error as e:
 #         logging.error(f'           [\'check_all_bedtimes()\' ERROR]: {e}')
 
-@tasks.loop(minutes=5)
+@tasks.loop(minutes=15)
 async def check_all_bedtimes():
     try:
         syncCursor.execute("SELECT id FROM subscriptions WHERE bedtime = 1")
@@ -555,10 +598,10 @@ def is_admin():
 
 def is_dev():
     async def predicate(interaction: discord.Interaction) -> bool:
-        developer_ids = {582583719546847234, }  # edited from here
+        developer_ids = {582583719546847234}  # edited from here
         if interaction.user.id in developer_ids:
             return True
-        await interaction.response.send_message("You are not a developer.")
+        await interaction.response.send_message("you're not a dev!! go away, shoo.")
         return False
 
     return app_commands.check(predicate)
@@ -586,6 +629,9 @@ async def gotosleep(interaction:discord.Interaction,user:discord.User,time:str,t
         await add_user(user.id)
         logging.info(
             f"User {user.name} did not exist in database, attempted to add.")
+    if await is_subscribed(user.id, 'shutup'):
+        await interaction.response.send_message(f"{user.name} told me to shut up sooo uhhhh... no can do. :3")
+        return
 
     # check if given time valid
     try:
@@ -628,11 +674,11 @@ async def gotosleep(interaction:discord.Interaction,user:discord.User,time:str,t
                      f'-# (timezone converted to UTC offset for privacy reasons)\n'
                      f'> uh-oh,,, that really shouldn\'t have happened.... please report this to my developer :,3\n\n')
     else:
-        response += f'User already has timezone {public_timezone} registered. Setting bedtime to {time} in that timezone.\n'
+        response += f"User already has timezone `{public_timezone}` registered. Setting bedtime to `{time}` in that timezone.\n"
 
     await update_user(user.id, bedtime_time=time, bedtime_message=message,
                       bedtime_applicant_username=interaction.user.name)
-    await update_subscriptions(user.id, bedtime=1)
+    await update_subscriptions(user.id, bedtime=True)
 
     user_data = await get_user_data(
         user.id,
@@ -650,7 +696,7 @@ async def gotosleep(interaction:discord.Interaction,user:discord.User,time:str,t
 
     response += (
         f"Registered bedtime for user ***{username}***:\n"
-        f"Bedtime: **{time}**\n"
+        f"Bedtime: **`{time}`**\n"
         f"Bedtime message: **{message}**\n"
         f"Bedtime applicant (will be credited on sending the message): **{applicant_username}**"
     )
@@ -665,15 +711,17 @@ async def gotosleep(interaction:discord.Interaction,user:discord.User,time:str,t
 @is_dev()
 async def bedtimecheck(interaction: discord.Interaction, user: discord.User):
     if await user_exists(user.id):
-        if await is_subscribed(user_id=user.id, subscription='bedtime'):
-            logging.info(f"User {user.name} got bedtimed. nerd!!")
-            await bedtime_check(user.id, interaction.channel_id)
-            await interaction.response.send_message('User was subscribed to bedtime, attempted bedtime check.',
-                                                    ephemeral=True)
+        if await is_subscribed(user.id, subscription='bedtime'):
+            poked, difference = poked_within(user.id, datetime.timedelta(minutes=15), return_difference=True)
+            if not poked:
+                await bedtime_check(user.id, interaction.channel_id)
+                await interaction.response.send_message('User was subscribed to bedtime, attempted bedtime check.', ephemeral=True)
+            else:
+                await interaction.response.send_message(f"User was subscribed to bedtime but was bothered less than {difference} ago. Try again later.")
         else:
             await interaction.response.send_message('User not subscribed to bedtime', ephemeral=True)
     else:
-        await interaction.response.send_message('User has no user data registered/does not exist.', ephemeral=True)
+        await interaction.response.send_message('User does not exist in database.', ephemeral=True)
 
 
 @tree.command(
@@ -696,7 +744,10 @@ async def getusertime(interaction: discord.Interaction, user: discord.User):
         timezone_str = await get_user_data(user.id, 'timezone')
         if timezone_str:
             timezone = ZoneInfo(timezone_str)
-            await interaction.response.send_message(f"It's {(datetime.datetime.now().astimezone(timezone)).strftime('%c')} for {user.name}")
+            if datetime.datetime.now().astimezone(timezone).time() >= datetime.time(hour=12):
+                await interaction.response.send_message(f"It's {(datetime.datetime.now().astimezone(timezone)).strftime('`%H:%M`/`%I:%M %p` (%d %b)')} for {user.display_name}")
+            else:
+                await interaction.response.send_message(f"It's {datetime.datetime.now().astimezone(timezone).strftime('%H:%M(%p) (%d %b)')} for {user.display_name}")
         else:
             await interaction.response.send_message("User does not have a timezone registered.")
     else:
@@ -705,9 +756,9 @@ async def getusertime(interaction: discord.Interaction, user: discord.User):
 
 @tree.command(
     name="convertusertime",
-    description="Converts a time in your time zone to the equivalent time in theirs, if they have set a time zone."
+    description="Converts a time in your timezone to the equivalent time in theirs, if they've set one."
 )
-@app_commands.describe(time="Format: [HOUR]:[MINUTE] (24-hour, devided by a ':')", timezone="Own/source timezone (if you haven't saved it already)")
+@app_commands.describe(time="Format: `[HOUR]`:`[MINUTE]` (24-hour, devided by a ':')", timezone="Own/source timezone (this isn't registered)")
 @app_commands.autocomplete(timezone=timezone_autocomplete)
 async def convertusertime(interaction: discord.Interaction, user: discord.User, time: str, timezone: str=None):
     if timezone and timezone not in zoneinfo.available_timezones():
@@ -728,9 +779,13 @@ async def convertusertime(interaction: discord.Interaction, user: discord.User, 
 
             target_timezone = ZoneInfo(target_timezone_str)
             source_timezone = ZoneInfo(source_timezone_str)
-            source_time = datetime.datetime.strptime(target_timezone_str, "%H:%M", tzinfo=source_timezone).time()
-            converted_time = source_time.astimezone(target_timezone)
-            await interaction.response.send_message(converted_time)
+            if time:
+                conversion_time = datetime.datetime.strptime(time, "%H:%M").replace(tzinfo=source_timezone)
+            else:
+                conversion_time = datetime.datetime.strptime(datetime.datetime.now(tzinfo=source_timezone))
+            converted_time = conversion_time.astimezone(target_timezone).time()
+            await interaction.response.send_message(
+                f"{conversion_time.strftime('`%H:%M`/`%I:%M %p`')} for {interaction.user.name} -> {converted_time.strftime('`%H:%M`/`%I:%M %p`')} for {user.display_name}")
         else:
             await interaction.response.send_message("Target user does not have a timezone registered.")
     else:
@@ -757,18 +812,49 @@ async def settimezone(interaction: discord.Interaction, timezone: str, private: 
     try:
         await update_user(interaction.user.id, timezone=timezone, timezone_private=private)
         logging.info("settimezone: Attempted to update user timezone")
-        await interaction.response.send_message(f"Set timezone to `{timezone}`.")
+        if not private:
+            await interaction.response.send_message(f"Set timezone to `{timezone}`.")
+        else:
+            await interaction.response.send_message(f"Set timezone to `{timezone_to_utc(timezone)}`")
+
     except aiosqlite.Error as e:
         await interaction.response.send_message(f"Setting timezone failed! :( (report this to my dev)\n`{e}`")
 
 
+@tree.command(
+    name="funnies",
+    description="Toggles annoying unprompted funny replies for you"
+)
+async def togglefunnies(interaction: discord.Interaction):
+    if await user_exists(interaction.user.id):
+        if not await is_subscribed(interaction.user.id, 'funnies'):
+            await update_subscriptions(interaction.user.id, funnies=True)
+            await interaction.response.send_message('funnies re-enabled.')
+            return
+        else:
+            await update_subscriptions(interaction.user.id, funnies=False)
+            await interaction.response.send_message('ok no more funnies :thumbsup:')
+            return
+    else:
+        await add_user(interaction.user.id)
+        await update_subscriptions(interaction.user.id, funnies=False)
+        await interaction.response.send_message('ok no more funnies :thumbsup:')
 
-
+@tree.command(
+    name="nvm",
+    description="Reverts 'shutup' and allows funny stuff again"
+)
+@app_commands.describe(enablefunnies="whether to re-enable annoying unprompted funny replies")
+async def nvm(interaction: discord.Interaction, enablefunnies: bool):
+    if await user_exists(interaction.user.id):
+        await update_subscriptions(interaction.user.id, shutup=False)
+        await interaction.response.send_message("we can now annoy you again :thumbsup:\n-# if you want funnies to be enabled too use /funnies")
+    else:
+        await interaction.response.send_message("i don't know you... :face_with_raised_eyebrow:\n-# (you don't exist in my database")
 
 
 # Start the bot
 create_tables()
-# Can optionally be substituted for running the bot manually
 client.run(
     token=TOKEN,
     log_handler=discord_logger,
