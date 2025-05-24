@@ -1,6 +1,8 @@
 # MISChief
 A purist miscellaneous discord bot written in python using discord.py.
 
+# IMPORTANT
+I was in the middle of another rewrite but have barely worked on it the last few months so this project is pretty much abandoned until I feel like working on it again lol
 
 ## Important note
 This is ***NOT*** in any way intended to be a serious project, and is purely me learning and practicing how to code. Any ideas, feedback or even contributions are still appreciated, but this is a **personal project** with no promise or garuantee of support or active development from me if ever or until stated otherwise. The only thing I ask for is as much feedback as you feel like giving.
