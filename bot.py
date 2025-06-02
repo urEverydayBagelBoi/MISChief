@@ -31,7 +31,7 @@ from interactions.api.events import MessageCreate # Events
 # Utilities
 import datetime
 import zoneinfo # exposes available_timezones as thats not under 'ZoneInfo' (capital letters) for some reason
-available_timezones = zoneinfo.available_timezones() # may be a somewhat expensive call? idk
+available_timezones = zoneinfo.available_timezones() # calling this every time may be a bit inefficient
 from zoneinfo import ZoneInfo
 import random
 import re
@@ -94,11 +94,11 @@ syncCursor = syncConn.cursor()
 user_columns = {
     'id': 'INTEGER NOT NULL UNIQUE',  # assumed to exist by creation, primary key
     'timezone': 'TEXT',
-    'recently_bothered': 'INTEGER',  # datetime stored as unix timestamp
+    'recent_poke': 'INTEGER',  # datetime stored as unix timestamp
+    'last_poke_type': 'TEXT', # name of the last type of poke (used in conjunction with shut up)
     'bedtime_message': 'TEXT',
     'bedtime_time': 'TEXT',  # stored as %H:%M 24-hour
-    # id of person that used the bedtime command on them
-    'bedtime_applicant': 'INTEGER'
+    'bedtime_applicant': 'INTEGER' # id of person that used the bedtime command on them
 }
 subscription_columns = {
     'id': 'INTEGER NOT NULL UNIQUE',  # references 'id' in 'users' table, primary key
@@ -111,37 +111,49 @@ subscription_defaults = {
     'funnies': 1,
     'shutup': 0
 }
+cooldown_columns = {
+    'id': 'INTEGER NOT NULL UNIQUE',
+    'bedtime': 'INTEGER'
+}
 
 def create_tables():
     # create tables if they don't exist
     syncCursor.execute("PRAGMA foreign_keys = True;")
     syncCursor.execute('''
         CREATE TABLE IF NOT EXISTS "users" (
-    	    "id"	INTEGER NOT NULL UNIQUE,
-    	    "timezone"	TEXT,
-            "recently_bothered" INTEGER,
-    	    "bedtime_message"	    TEXT,
-    	    "bedtime_time"	        TEXT,
+    	    "id" INTEGER NOT NULL UNIQUE,
+    	    "timezone" TEXT,
+            "recent_poke" INTEGER,
+    	    "bedtime_message" TEXT,
+    	    "bedtime_time" TEXT,
     	    "bedtime_applicant" INTEGER,
+            "last_poke_type" TEXT,
     	    PRIMARY KEY("id")
         );
     ''')
     syncCursor.execute('''
         CREATE TABLE IF NOT EXISTS "subscriptions" (
-    	    "id"	INTEGER NOT NULL UNIQUE,
-    	    "bedtime"	INTEGER NOT NULL DEFAULT 0,
-    	    "funnies"	INTEGER NOT NULL DEFAULT 1,
-    	    "shutup"    INTEGER NOT NULL DEFAULT 0,
+    	    "id" INTEGER NOT NULL UNIQUE,
+    	    "bedtime" INTEGER NOT NULL DEFAULT 0,
+    	    "funnies" INTEGER NOT NULL DEFAULT 1,
+    	    "shutup" INTEGER NOT NULL DEFAULT 0,
     	    FOREIGN KEY("id") REFERENCES "users"("id") ON DELETE CASCADE,
     	    PRIMARY KEY("id")
-        );  
-                   
+        );
     ''')
     syncCursor.execute('''
-        CREATE TABLE IF NOT EXISTS "cooldowns" ("id" INTEGER NOT NULL UNIQUE)
+        CREATE TABLE IF NOT EXISTS "cooldowns" (
+        "id" INTEGER NOT NULL UNIQUE,
+        "bedtime" INTEGER,
+        FOREIGN KEY("id") REFERENCES "users"("id") ON DELETE CASCADE,
+        PRIMARY KEY("id")
+        );
     ''')
-    # no columns specified on creation since they're added on the fly
     syncConn.commit()
+
+    # Possible values for 'last_poke_type' are:
+    # 'bedtime'
+    # 'funnies'
 
 def verify_columns(table_name, columns):
     if not isinstance(columns, dict):
@@ -336,27 +348,30 @@ async def is_subscribed(conn, user_id, *args):
     return output if output else defaults
 
 async def set_cooldown(conn, user_id, *args):
+    '''
+    Sets a cooldown to now.
+    '''
     if not args:
         logging.error("set_cooldown(): no args were passed.")
     # Add the needed columns if they don't exist
-    try:
-        async with conn.execute(f"PRAGMA table_info(cooldowns)") as cursor:
-            existing_columns = cursor.fetchall()
-        existing_column_names = ['id'] + [column[1] for column in existing_columns]
-        for column_name in args:
-            if column_name not in existing_column_names:
-                conn.execute(F"ALTER TABLE cooldowns ADD COLUMN {column_name} INTEGER") # Integer, a timestamp (from datetime)
-                logging.info(f"set_cooldown(): cooldown {column_name} did not exist, attempted to add.")
-            else:
-                logging.info(f"set_cooldown(): cooldown {column_name} already has a column.")
-        conn.commit()
-    except aiosqlite.Error as e:
-        conn.rollback()
-        logging.error(f"        ['set_cooldown' TABLE UPDATE ERROR]: {e}")
+    # try:
+    #     async with conn.execute(f"PRAGMA table_info(cooldowns)") as cursor:
+    #         existing_columns = cursor.fetchall()
+    #     existing_column_names = ['id'] + [column[1] for column in existing_columns]
+    #     for column_name in args:
+    #         if column_name not in existing_column_names:
+    #             conn.execute(F"ALTER TABLE cooldowns ADD COLUMN {column_name} INTEGER") # Integer, a timestamp (from datetime)
+    #             logging.info(f"set_cooldown(): cooldown {column_name} did not exist, attempted to add.")
+    #         else:
+    #             logging.info(f"set_cooldown(): cooldown {column_name} already has a column.")
+    #     conn.commit()
+    # except aiosqlite.Error as e:
+    #     conn.rollback()
+    #     logging.error(f"        ['set_cooldown' TABLE UPDATE ERROR]: {e}")
     # Set the timestamps
     # construct the set clause dynamically
     set_clause = ', '.join(f"{arg} = ?" for arg in args)
-    values = [datetime.datetime.now().timestamp() for arg in args]
+    values = [int(datetime.datetime.now().timestamp()) for arg in args]
     values.append(user_id)
     sql = f"UPDATE cooldowns SET {set_clause} WHERE id = ?"
 
@@ -376,6 +391,7 @@ async def cooldown_within(conn, user_id, timedelta: datetime.timedelta = None, *
     '''
     Returns whether a cooldown, or a set of cooldowns, was activated within specified datetime.timedelta timeframe,
     or if no timedelta is specified; how much time passed since (the most recent one if multiple requested).
+    Returns None for each timestamp requested that doesn't exist.
     '''
     if not args:
         raise ValueError(f"cooldown_within(): no args were passed.")
@@ -384,7 +400,7 @@ async def cooldown_within(conn, user_id, timedelta: datetime.timedelta = None, *
     # construct clause dynamically
     try: # get existing columns
         async with conn.execute(f"PRAGMA table_info(cooldowns)") as cursor:
-            existing_columns = cursor.fetchall()
+            existing_columns = await cursor.fetchall()
         existing_column_names = ['id'] + [column[1] for column in existing_columns]
     except aiosqlite.Error as e:
         logging.error(f"    ['cooldown_within' EXISTING COLUMN RETRIEVAL ERROR]: {e}")
@@ -401,14 +417,24 @@ async def cooldown_within(conn, user_id, timedelta: datetime.timedelta = None, *
     except aiosqlite.Error as e:
         logging.error(f"    ['cooldown_within] ERROR]: {e} | SQL: {sql} | Clause: {clause}")
     if len(args) == 1:
-        then = data[0]
-        now = datetime.datetime.now().timestamp()
-        difference = now - then
-        minimum_difference = timedelta.total_seconds()
-        recent = difference is not None and difference < minimum_difference
+        if data is None:
+            recent = False # not recent (never)
+        else:
+            then = data[0]
+            now = datetime.datetime.now().timestamp()
+            difference = now - then
+            minimum_difference = timedelta.total_seconds()
+            recent = difference is not None and difference < minimum_difference
         return recent
+    
+    output = []
+    if data is None:
+        for arg in args:
+            if timedelta:
+                output.append(False) # not recent (never)
+            else:
+                output.append(None)
     else:
-        output = []
         for value in data:
             then = value
             now = datetime.datetime.now().timestamp()
@@ -422,9 +448,9 @@ async def cooldown_within(conn, user_id, timedelta: datetime.timedelta = None, *
         return output
 
 
-async def reset_poke_time(conn, user_id):
+async def reset_poke(conn, user_id, poke_type: str):
     '''
-    Sets the last time the user was poked to now
+    Sets the last time the user was poked to now and the poke type
     '''
     # check if user exists in database and add them to users table otherwise.
     # this shouldn't ever run because a user shouldn't be bothered if not told to
@@ -433,19 +459,17 @@ async def reset_poke_time(conn, user_id):
         await add_user(user_id)
         conn.commit()
         logging.WARNING(
-            f"[bold red blink]User {client.fetch_user(user_id).global_name} did not exist in database when 'reset_poke_time' was called."
+            f"[bold red blink]User {client.fetch_user(user_id).global_name} did not exist in database when 'reset_poke' was called."
             "This means a user was bothered [underline]UNPROMPTED[/][/]",
             extra={"markup": True}
         )
-    if user_id == client.user.id:
-        raise ValueError('add_user(): self/client should not exist in database')
     try:
         unixepoch = datetime.datetime.now().timestamp()
-        await conn.execute("UPDATE users SET recently_bothered = ? WHERE id = ?", (unixepoch, user_id))
+        await conn.execute("UPDATE users SET recent_poke = ? WHERE id = ?", (unixepoch, user_id))
         await conn.commit()
     except aiosqlite.Error as e:
         conn.rollback()
-        logging.error(f"           ['reset_poke_time' UPDATE ERROR]: {e}")
+        logging.error(f"           ['reset_poke' UPDATE ERROR]: {e}")
 
 async def poked_within(conn, user_id, timedelta: datetime.timedelta = None, return_difference: bool = None):
     '''
@@ -457,7 +481,7 @@ async def poked_within(conn, user_id, timedelta: datetime.timedelta = None, retu
         return
 
     try:
-        async with conn.execute("SELECT recently_bothered FROM users WHERE id = ?", (user_id,)) as cursor:
+        async with conn.execute("SELECT recent_poke FROM users WHERE id = ?", (user_id,)) as cursor:
             row = await cursor.fetchone()
             if row is None or row[0] is None:
                 # No data found or was never poked
@@ -488,7 +512,7 @@ async def bedtime_check(conn, user_id: int, channel_id: int = None):
     '''
     Assumes that the user is subscribed to 'bedtime'
     Handles checking if their local time is past bedtime and sending messages to the user's DM and the specified 'channel_id', if any.
-    Cooldown is not handled by this function.
+    Reading cooldown is not handled by this function. It *does* set cooldowns.
     '''
     try:
         timezone_str, bedtime_str, message, applicant_id = await get_user_data(conn, user_id, 'timezone', 'bedtime_time', 'bedtime_message', 'bedtime_applicant')
@@ -511,20 +535,21 @@ async def bedtime_check(conn, user_id: int, channel_id: int = None):
                 channel = await client.fetch_channel(channel_id)
                 applicant = await client.fetch_user(applicant_id)
                 if message:
-                    await channel.send(f"<@{user_id}>,\n> {message}\n*Bedtime message from {applicant.global_name}*")
+                    await channel.send(f"<@{user_id}>,\n> {message}\n*Bedtime message from {applicant.global_name}*\n-# You can mute these by replying with 'shut up' or using /shutup")
                 else:
                     await channel.send(
-                        f"<@{user_id}>, it's after {bedtime_str} in your timezone! Go to bed!\n*Bedtime message from {applicant.global_name}*"
+                        f"<@{user_id}>, it's after {bedtime_str} in your timezone! Go to bed!\n*Bedtime message from {applicant.global_name}*\n-# You can mute these by replying with 'shut up' or using /shutup"
                     )
             else:
                 user = client.fetch_user(user_id)
                 if message:
-                    await user.send(f"<@{user_id}>,\n> {message}\n*Bedtime message from {applicant.global_name}*")
+                    await user.send(f"<@{user_id}>,\n> {message}\n*Bedtime message from {applicant.global_name}*\n-# You can mute these by replying with 'shut up' or using /shutup")
                 else:
                     await user.send(
-                        f"<@{user_id}>, it's after {bedtime_str} in your timezone! go to bed!\n*Bedtime message from {applicant.global_name}*"
+                        f"<@{user_id}>, it's after {bedtime_str} in your timezone! go to bed!\n*Bedtime message from {applicant.global_name}*\n-# You can mute these by replying with 'shut up' or using /shutup"
                     )
-            await reset_poke_time(conn, user_id)
+            await reset_poke(conn, user_id, poke_type='user')
+            await set_cooldown(conn, user_id, 'bedtime')
 
         else:
             logging.info(f"bedtime_check: Decided [underline]NOT[/] bedtime for user [{user_id}].", extra={"markup": True})
@@ -545,7 +570,7 @@ async def check_all_bedtimes():
         async with await conn.execute("SELECT id FROM subscriptions WHERE bedtime = 1") as cursor:
             for row in cursor:
                 user_id, = row
-                if await poked_within(conn, user_id, timedelta=datetime.timedelta(minutes=30)):
+                if await cooldown_within(conn, user_id, datetime.timedelta(minutes=30), 'bedtime'):
                     return
                 bedtime_check(conn, user_id)
     except sqlite3.Error as e:
@@ -557,6 +582,7 @@ async def check_all_bedtimes():
 async def on_startup():
     verify_columns(table_name='users', columns=user_columns)
     verify_columns(table_name='subscriptions', columns=subscription_columns)
+    verify_columns(table_name='cooldowns', columns=cooldown_columns)
     logging.info(
         f"[bright_magenta]    || [Ready. Logged in as {client.user}] ||\n",
         extra={"markup": True}
@@ -581,7 +607,7 @@ two_emoji = '2️⃣'
 one_emoji = '1️⃣'
 twentyone_prompts = ("whats 9 plus 10", "what's 9 plus 10", "whats 9 + 10", "what's 9 + 10",
                      "whats nine plus ten", "what's nine plus ten", "whats nine + ten", "what's nine + ten")
-keywords = ['727', '69', '420', 'auto', 'car', 'audi', 'kip']
+keywords = ['727', '69', '420', 'auto', 'car', 'audi', 'kip', 'bucket']
 shutup_users = {} # if shut up is used they are remembered in this cache for 5 minutes and then deleted if they do not confirm or send a message not equal to 'confirm'
 post_confirm_users = {} # same thing but when the bot asks if they want to delete automated user messages as well
 
@@ -600,7 +626,7 @@ async def on_message_create(event):
     bot_mentioned = client.user in mentioned_users
     
     # Log messages (and return if message is from own client)
-    # THIS IS TEMPORARY AND FOR DEBUG PURPOSES ONLY, AND SHOULD BE COMMENTED OUT/REMOVED FOR SECURITY/PRIVACY REASONS IN REAL USE
+    # THIS IS TEMPORARY AND FOR DEBUG PURPOSES ONLY, AND SHOULD BE COMMENTED OUT/REMOVED FOR SECURITY/PRIVACY REASONS DURING REAL USE
     if message.author == client.user:
         logging.info(
             f"\n[black on white]{message.author}[/] [bright_black][{(message.created_at.astimezone()).strftime('%H:%M')}][/]\n{message.content}\n",
@@ -616,43 +642,42 @@ async def on_message_create(event):
     if message.content.lower() == 'confirm' and message.author.id in shutup_users:
         command = True
         shutup_users.pop(message.author.id, None)
-        await message.reply('''
-            Got it, I won't bother you with any more nonsense.
-            You can re-enable funny stuff by using `/nvm`.
-            Do you want to disable automated messages from other users as well?
-            (**y**es/**n**o)?
-            ''')
-        try:
-            await update_subscriptions(conn, message.author.id, funnies=False, bedtime=False)
-        except aiosqlite.Error as e:
-            await message.reply(f"Failed to process your request!! Please contact my dev so this may be resolved manually!! (@ureverydaybagelboi)\nERROR: `{e}`")
+        last_poke_type = await get_user_data(conn, message.author.id, 'last_poke_type')
+        shutup, funnies = await is_subscribed(conn, message.author.id, 'shutup', 'funnies')
+        shutup_enabled = bool(shutup)
+        funnies_enabled = bool(funnies)
+        if last_poke_type == 'auto':
+            reply = ""
+            reply += '''
+            Got it, I won't bother you with any unnecessary automated messages.
+            You can re-enable funny stuff by using `/nvm`, or use `/shutup` to set your preferences directly or disable all pokes.
+            '''
+            if shutup_enabled:
+                reply += "-# **NOTE:** Automated messages from *other users* are __still enabled!__"
+            try:
+                await update_subscriptions(conn, message.author.id, funnies=False)
+            except:
+                await message.reply(f"Failed to process your request!! Please contact my dev so this may be resolved manually, and the bug fixed. (@ureverydaybagelboi on Discord)")
+        if last_poke_type == 'user':
+            reply = ""
+            reply += '''
+            Got it, I won't bother you with any spam from other users.
+            You can re-enable funny stuff by using `/nvm`, or use `/shutup` to set your preferences directly or disable all pokes.
+            '''
+            if funnies_enabled:
+                reply += "-# **NOTE:** Automated messages that *aren't from other users* are __still enabled!__"
+            try:
+                await update_subscriptions(conn, message.author.id, shutup=True)
+            except:
+                await message.reply(f"Failed to process your request!! Please contact my dev so this may be resolved manually, and the bug fixed. (@ureverydaybagelboi on Discord)")
     elif message.author.id in shutup_users and message.content.lower() != 'confirm':
         shutup_users.pop(message.author.id, None) # forget if user says something other than confirm
     
-    if message.author.id in post_confirm_users:
-        if message.content.lower() in ['yes', 'y']:
-            command = True
-            post_confirm_users.pop(message.author.id, None)
-            await message.reply("Ok, got it. Disabling those as well.")
-            try:
-                await update_subscriptions(conn, message.author.id, funnies = False, bedtime=False, shutup=True)
-            except aiosqlite.Error as e:
-                await message.reply(f"Failed to process your request!! Please contact my dev so this may be resolved manually!! (@ureverydaybagelboi)\nERROR: `{e}`")
-        elif message.content.lower() in ['no', 'n']:
-            command = True
-            post_confirm_users.pop(message.author.id, None)
-            await message.reply("Ok, keeping those enabled.")
-        else:
-            post_confirm_users.pop(message.author.id, None)
-            
-    
     # forget users after 5 minutes
     for id, time in shutup_users.items():
-        if time > datetime.datetime.utcnow() - datetime.timedelta(minutes=5):
+        if time > datetime.datetime.now() - datetime.timedelta(minutes=5):
             shutup_users.pop(id, None)
-    for id, time in post_confirm_users.items():
-        if time > datetime.datetime.utcnow() - datetime.timedelta(minutes=5):
-            post_confirm_users.pop(id, None)
+
 
     # check if message directed at MISCHief
     referenced_message = await event.message.fetch_referenced_message()
@@ -660,9 +685,14 @@ async def on_message_create(event):
         (message.channel.type == interactions.ChannelType.DM) or bot_mentioned
         or referenced_message is not None and referenced_message.author == client.user
     ) and any(contains_word(message.content.lower(), prompt) for prompt in shutup_prompts):
-        shutup_users[message.author.id] = datetime.datetime.utcnow()
-        await message.reply(f"{random.choice(shutup_responses)}\n**Are you sure?**\n-# Type 'confirm' to confirm.")
+        shutup_users[message.author.id] = datetime.datetime.now()
         command = True
+        last_poke_type = await get_user_data(conn, message.author.id, 'last_poke_type')
+        
+        if last_poke_type == 'auto':
+            await message.reply(f"{random.choice(shutup_responses)}\n**Are you sure you want to disable these automated messages?**\n-# Type 'confirm' to confirm.")
+        if last_poke_type == 'user':
+            await message.reply(f"{random.choice(shutup_responses)}\n**Are you sure you want to disable messages from other users?**\n-# Type 'confirm' to confirm.")
 
         # if the bot is DMed or mentioned, hint to slash commands (unless message is a text prompt command)
     if event.message.channel.type == interactions.ChannelType.DM and not command:
@@ -683,7 +713,7 @@ async def on_message_create(event):
     # Bedtime
     if subscribed_bedtime:
         logging.info(f"Message author {message.author.global_name} was subscribed to bedtime")
-        if not await poked_within(conn, message.author.id, timedelta=datetime.timedelta(minutes=15)):
+        if not await cooldown_within(conn, message.author.id, datetime.timedelta(minutes=30), 'bedtime'):
             logging.info(f"Message author wasn't poked in the last 15 minutes. Running bedtime check.")
             await bedtime_check(conn, message.author.id, message._channel_id)
     else:
@@ -697,11 +727,12 @@ async def on_message_create(event):
             await message.add_reaction(fish_emoji)
             await message.reply("**fish!**", mention_author=True)
             logging.info(f"{message.author} got fished")
+            await reset_poke(conn, message.author.id, poke_type='auto')
         if any(contains_word(message.content.lower(), prompt) for prompt in twentyone_prompts):
             await message.add_reaction(two_emoji)
             await message.add_reaction(one_emoji)
             logging.info(f"{message.author} asked what 9 + 10 is")
-        
+            await reset_poke(conn, message.author.id, poke_type='auto')
         # pointing at keywords
         response = ""
         for keyword in keywords:
@@ -730,10 +761,13 @@ async def on_message_create(event):
                             response += 'met koelkast? :)\n\n'
                             continue
                         if keyword == 'kip':
-                            response += 'het meest veelzijdige stukje vleest- taar- vis!- **kut.**\n\n'
+                            response += 'het meest veelzijdige stukje vleest- taar- vis!- keest :thumbsup:\n\n'
                             continue
+                        if keyword == 'bucket':
+                            response += '*dear god...*\n\n'
         if response != "":
             await message.reply(response, mention_author=False)
+            await reset_poke(conn, message.author.id, poke_type='funnies')
     else:
         logging.info('user was not subscribed to funnies :(')
 
@@ -827,19 +861,19 @@ async def shutup_func(ctx: SlashContext, which: int):
     conn = await aiosqlite.connect(database)
     if which == 0:
         try:
-            await update_subscriptions(conn, ctx.user.id, funnies=True, shutup=False)
+            await update_subscriptions(conn, ctx.user.id, funnies=False, shutup=True)
             await ctx.respond('Ok, disabling all nonsense.')
         except:
             await ctx.respond("Failed to process your request!! Please contact my dev so this may be resolved manually!! (@ureverydaybagelboi)")
     elif which == 1:
         try:
-            await update_subscriptions(conn, ctx.user.id, shutup=False)
+            await update_subscriptions(conn, ctx.user.id, shutup=True)
             await ctx.respond('Ok, re-enabling funny stuff from users only. :3')
         except:
             await ctx.respond("Failed to process your request!! Please contact my dev so this may be resolved manually!! (@ureverydaybagelboi)")
     else:
         try:
-            await update_subscriptions(conn, ctx.user.id, funnies=True)
+            await update_subscriptions(conn, ctx.user.id, funnies=False)
             await ctx.respond('Ok, re-enabling funny stuff from me only. :3')
         except:
             await ctx.respond("Failed to process your request!! Please contact my dev so this may be resolved manually!! (@ureverydaybagelboi)")
@@ -990,7 +1024,7 @@ async def getusertime_func(ctx: SlashContext, user: User | Member):
     autocomplete=True
 )
 async def convertusertime_func(ctx: SlashContext, user: User | Member, time: str, timezone: str = None):
-    if timezone is not None and timezone not in zoneinfo.available_timezones():
+    if timezone is not None and timezone not in available_timezones:
         await ctx.respond(f"Invalid timezone: {timezone}")
     conn = await aiosqlite.connect(database)
     if await user_exists(conn, user.id):
