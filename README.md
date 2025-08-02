@@ -2,6 +2,7 @@
 A purist miscellaneous discord bot written in python using interactions.py.
 
 ## Important note
+This bot is *not even done as of currently. Most things don't even work yet.*
 This is ***NOT*** in any way intended to be a serious project, and is purely me learning and practicing how to code. Any ideas or feedback are appreciated, but this is a personal project with no promise or garuantee of support or active development.
 
 There currently isn't much of anything to this project, but this README will be updated as I flesh out both my skills and the project itself.
