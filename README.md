@@ -1,4 +1,6 @@
 # MISChief
+> Not another general-purpose bot.
+
 A purist miscellaneous discord bot written in python using interactions.py.
 
 ## Important note
