@@ -17,17 +17,18 @@
 # * message create event doesn't use a 'try:' when it uses database functions
 # * verify requested columns in all database functions that dynamically construct SQL queries (done i think?)
 # * update_subscriptions() isn't working properly for some reason...? (fixed i think????)
-# Make timezone autocomplete function reusable
+# * Make timezone autocomplete function reusable
 # make MISChief check whether something is directed at itself and don't do anything if so (and reply with something funny)
-# Remove the weird unnecessary indentation in the logging.error() calls... like actually... why????
+# * Remove the weird unnecessary indentation in the logging.error() calls... like actually... why????
 
-# IN PROGRESS:
+# ALREADY DONE:
 # right now there is only one universal cooldown called 'poke'
 # i should probably instead make a function that takes arbitrary kwargs,
 # so i can just use the function and say '(re)set a timestamp called {any name}' and ask
 # 'was the timestamp called {any name} (re)set less than {any time} ago?' or 'how long ago was this timestamp (re)set?'
 
 # Main Discord API's
+#from enum import verify
 import interactions # main module
 from interactions import User, Member, Intents # Basic
 from interactions import slash_command, SlashContext, slash_option, OptionType, SlashCommandChoice, AutocompleteContext # Slash Commands
@@ -35,9 +36,9 @@ from interactions.api.events import MessageCreate # Events
 
 # Utilities
 import datetime
+from zoneinfo import ZoneInfo
 import zoneinfo # exposes available_timezones as thats not under 'ZoneInfo' (capital letters) for some reason
 available_timezones = zoneinfo.available_timezones() # calling this every time may be a bit inefficient
-from zoneinfo import ZoneInfo
 import random
 import re
 import rapidfuzz # Narrow selection for autocomplete/many choice
@@ -181,7 +182,7 @@ def verify_columns(table_name, columns):
         syncConn.commit()
     except sqlite3.Error as e:
         syncConn.rollback()
-        logging.error(f"           [DATABASE 'verify_columns' ERROR]: {e}")
+        logging.error(f"[DATABASE 'verify_columns' ERROR]: {e}")
 
 async def add_user(conn, user_id):
     '''Adds a user to the database if they don't exist'''
@@ -198,10 +199,10 @@ async def add_user(conn, user_id):
                     await conn.execute(f'INSERT INTO {table} (id) VALUES (?)', (user_id,))
     except aiosqlite.Error as e:
         await conn.rollback()
-        logging.error(f"           [DATABASE USER ADD ERROR]: {e}")
+        logging.error(f"[DATABASE USER ADD ERROR]: {e}")
 
 async def delete_user(conn, user_id):
-    if not await user_exists(conn, user_id):
+    if not await verify_user(conn, user_id):
         return
     try:
         for table in tables:
@@ -210,11 +211,11 @@ async def delete_user(conn, user_id):
         await conn.rollback()
         # CONTACT USER (delete data manually)
         user = await client.fetch_user(user_id)
-        logging.ERROR(f'    !!!!!!!!!!FAILED TO DELETE DATA FOR USER {user}!!!!!!!!!!!')
+        logging.ERROR(f'!!!!!!!!!!FAILED TO DELETE DATA FOR USER {user}!!!!!!!!!!!')
         try:
             await user.send('I somehow failed to delete your data, contact @ureverydaybagelboi so it may be deleted manually!!')
         except:
-            logging.ERROR(f'    !!!!!!!!!FAILED TO NOTIFY USER OF FAILING TO DELETE DATA!!!!')
+            logging.ERROR(f'!!!!!!!!!FAILED TO NOTIFY USER OF FAILING TO DELETE DATA!!!!')
         await client.fetch_user(582583719546847234).send(f'Failed to delete data for user {user}!!! {client.fetch_user(582583719546847234).mention}')
 
 async def user_exists(conn, user_id):
@@ -230,7 +231,7 @@ async def user_exists(conn, user_id):
 
         return all(checks)
     except aiosqlite.Error as e:
-        logging.error(f"           [USER EXISTS VERIFICATION ERROR]: {e}")
+        logging.error(f"[USER EXISTS VERIFICATION ERROR]: {e}")
 
 async def verify_user(conn, user_id):
     '''
@@ -255,7 +256,7 @@ async def verify_user(conn, user_id):
 
         return all(checks)
     except aiosqlite.Error as e:
-        logging.error(f"           [USER EXISTS VERIFICATION ERROR]: {e}")
+        logging.error(f"[USER EXISTS VERIFICATION ERROR]: {e}")
 
 async def update_user(conn, user_id, **kwargs):
     '''Updates user data. Adds to database if they do not exist.'''
@@ -308,7 +309,7 @@ async def get_user_data(conn, user_id, *args):
         async with conn.execute(sql, (user_id,)) as cursor:
             output = await cursor.fetchone()
     except aiosqlite.Error as e:
-        logging.error(f"           [DATABASE 'get_user_data' ERROR]: {e}")
+        logging.error(f"[DATABASE 'get_user_data' ERROR]: {e}")
 
     # return single value if only one column is requested
     if len(args) == 1:
@@ -367,7 +368,7 @@ async def is_subscribed(conn, user_id, *args):
         async with conn.execute(sql, (user_id,)) as cursor:
             output = await cursor.fetchone()
     except aiosqlite.Error as e:
-        logging.error(f"        [DATABASE 'is_subscribed' ERROR]: {e} | SQL: {sql}")
+        logging.error(f"[DATABASE 'is_subscribed' ERROR]: {e} | SQL: {sql}")
 
     if not output: # if user doesn't exist
         return defaults
@@ -398,7 +399,7 @@ async def set_cooldown(conn, user_id, *args):
         await conn.execute(sql, values)
     except aiosqlite.Error as e:
         await conn.rollback()
-        logging.error(f"    ['set_cooldown' UPDATE ERROR]: {e}")
+        logging.error(f"['set_cooldown' UPDATE ERROR]: {e}")
 
 async def cooldown_within(conn, user_id, timedelta: datetime.timedelta = None, *args):
     '''
@@ -408,7 +409,7 @@ async def cooldown_within(conn, user_id, timedelta: datetime.timedelta = None, *
     '''
     if not args:
         raise ValueError(f"cooldown_within(): no args were passed.")
-    if not await user_exists(conn, user_id):
+    if not await verify_user(conn, user_id):
         return None if len(args) == 1 else [None for arg in args]
     # construct clause dynamically
     try: # get existing columns
@@ -428,7 +429,7 @@ async def cooldown_within(conn, user_id, timedelta: datetime.timedelta = None, *
         async with conn.execute(sql, (user_id,)) as cursor:
             data = await cursor.fetchone()
     except aiosqlite.Error as e:
-        logging.error(f"    ['cooldown_within] ERROR]: {e} | SQL: {sql} | Clause: {clause}")
+        logging.error(f"['cooldown_within] ERROR]: {e} | SQL: {sql} | Clause: {clause}")
     if len(args) == 1:
         if data is None:
             recent = False # not recent (never)
@@ -481,7 +482,7 @@ async def reset_poke(conn, user_id, poke_type: str):
         await conn.execute("UPDATE users SET recent_poke = ?, last_poke_type = ? WHERE id = ?", (unixepoch, poke_type, user_id))
     except aiosqlite.Error as e:
         await conn.rollback()
-        logging.error(f"           ['reset_poke' UPDATE ERROR]: {e}")
+        logging.error(f"['reset_poke' UPDATE ERROR]: {e}")
 
 async def poked_within(conn, user_id, timedelta: datetime.timedelta = None, return_difference: bool = None):
     '''
@@ -518,7 +519,7 @@ async def poked_within(conn, user_id, timedelta: datetime.timedelta = None, retu
                     "'poked_within' must be given either a timedelta, True for return_difference or both."
                     )
     except aiosqlite.Error as e:
-        logging.error(f"           ['poked_within' ERROR]: {e}")
+        logging.error(f"['poked_within' ERROR]: {e}")
 
 async def bedtime_check(conn, user_id: int, channel_id: int = None):
     '''
@@ -570,7 +571,7 @@ async def bedtime_check(conn, user_id: int, channel_id: int = None):
             logging.info(f"bedtime_check: Decided [underline]NOT[/] bedtime for user [{user_id}].", extra={"markup": True})
             pass
     except aiosqlite.Error as e:
-        logging.error(f"            [bedtime_check() ERROR]: {e}")
+        logging.error(f"[bedtime_check() ERROR]: {e}")
 
 
 
@@ -592,7 +593,7 @@ async def check_all_bedtimes():
             await conn.commit()
     except aiosqlite.Error as e:
         await conn.rollback()
-        logging.error(f"           ['check_all_bedtimes()' ERROR]: {e}")
+        logging.error(f"['check_all_bedtimes()' ERROR]: {e}")
 
 # On bot start
 @interactions.listen()
@@ -806,6 +807,7 @@ async def on_message_create(event):
         logging.info('user was not subscribed to funnies :(')
 
     await conn.commit() # atomically write all changes queued throughout this function to database
+    await conn.close() # shouldve added this a long time ago... i wonder why my db keeps saying its locked. :facepalm:
 
 
 #       //// SLASH-COMMANDS
@@ -942,6 +944,9 @@ async def shutup_func(ctx: SlashContext, which: int):
     autocomplete=True
 )
 async def gotosleep_func(ctx: SlashContext, user: User | Member, time: str, message: str = None, timezone: str = None):
+    if user.id == client.user.id:
+        await ctx.send('ummmmm... i dont even sleep...')
+        return
     async with aiosqlite.connect(database) as conn:
         response = ""
         try:
@@ -1008,7 +1013,7 @@ async def gotosleep_func(ctx: SlashContext, user: User | Member, time: str, mess
 
         except aiosqlite.Error as e:
             await conn.rollback()
-            logging.error(f"           ['gotosleep_func()' ERROR]: {e}")
+            logging.error(f"['gotosleep_func()' ERROR]: {e}")
 
 
 @slash_command(
@@ -1023,14 +1028,15 @@ async def gotosleep_func(ctx: SlashContext, user: User | Member, time: str, mess
 )
 async def getusertime_func(ctx: SlashContext, user: User | Member):
     conn = await aiosqlite.connect(database)
-    if await user_exists(conn, user.id):
+    if await verify_user(conn, user.id):
         timezone_str = await get_user_data(conn, user.id, 'timezone')
         if timezone_str:
             timezone_obj = ZoneInfo(timezone_str)
+            username = user.display_name if user.id != client.user.id else 'me'
             if datetime.datetime.now().astimezone(timezone_obj).time() >= datetime.time(hour=12):
-                await ctx.respond(f"It's {(datetime.datetime.now().astimezone(timezone_obj)).strftime('`%H:%M`/`%I:%M %p` (%d %b)')} for {user.display_name}")
+                await ctx.respond(f"It's {(datetime.datetime.now().astimezone(timezone_obj)).strftime('`%H:%M`/`%I:%M %p` (%d %b)')} for {username}")
             else:
-                await ctx.respond(f"It's {datetime.datetime.now().astimezone(timezone_obj).strftime('`%H:%M(%p)` (%d %b)')} for {user.display_name}")
+                await ctx.respond(f"It's {datetime.datetime.now().astimezone(timezone_obj).strftime('`%H:%M(%p)` (%d %b)')} for {username}")
         else:
             await ctx.respond("User does not have a timezone registered.")
     else:
@@ -1061,38 +1067,37 @@ async def getusertime_func(ctx: SlashContext, user: User | Member):
 )
 async def convertusertime_func(ctx: SlashContext, user: User | Member, time: str, timezone: str = None):
     if timezone is not None and timezone not in available_timezones:
-        await ctx.respond(f"Invalid timezone: {timezone}")
-    conn = await aiosqlite.connect(database)
-    if await user_exists(conn, user.id):
-        target_timezone_str = await get_user_data(conn, user.id, 'timezone')
-        if target_timezone_str:
-            if target_timezone_str not in available_timezones:
-                await ctx.respond("Target user timezone invalid! (report this to my dev)")
-                return
-            if not timezone:
-                source_timezone_str = await get_user_data(ctx.user.id, 'timezone')
-                if not source_timezone_str:
-                    await ctx.respond("You don't have a timezone registered, nor was a source timezone specified.")
+        await ctx.send(f"Invalid timezone: `{timezone}`")
+    if user.id == ctx.user.id:
+        await ctx.send("Can't convert time between you and yourself :P")
+    async with aiosqlite.connect(database) as conn:
+        if await verify_user(conn, user.id):
+            target_timezone_str = await get_user_data(conn, user.id, 'timezone')
+            if target_timezone_str:
+                if target_timezone_str not in available_timezones:
+                    await ctx.respond("Target user timezone invalid! (report this to my dev)")
                     return
-            else:
-                if timezone not in available_timezones:
-                    await ctx.respond("Invalid timezone: {timezone}")
-                    return
-                await update_user(conn, ctx.user.id, timezone=timezone)
-                source_timezone_str = timezone
+                if not timezone:
+                    source_timezone_str = await get_user_data(ctx.user.id, 'timezone')
+                    if not source_timezone_str:
+                        await ctx.respond("You don't have a timezone registered, nor was a source timezone specified.")
+                        return
+                else:
+                    await update_user(conn, ctx.user.id, timezone=timezone)
+                    source_timezone_str = timezone
 
-            target_timezone = ZoneInfo(target_timezone_str)
-            source_timezone = ZoneInfo(source_timezone_str)
-            if time:
-                conversion_time = datetime.datetime.strptime(time, "%H:%M").replace(tzinfo=source_timezone)
+                target_timezone = ZoneInfo(target_timezone_str)
+                source_timezone = ZoneInfo(source_timezone_str)
+                if time:
+                    conversion_time = datetime.datetime.strptime(time, "%H:%M").replace(tzinfo=source_timezone)
+                else:
+                    conversion_time = datetime.datetime.strptime(datetime.datetime.now(tzinfo=source_timezone))
+                target_time = conversion_time.astimezone(target_timezone).time()
+                await ctx.respond(f"{target_time.strftime('`%H:%M`/`%I:%M %p`')} for {ctx.user.display_name} -> {target_time.strftime('`%H:%M`/`%I:%M %p`')} for {(user.display_name if user.id != client.user.id else 'me')}")
             else:
-                conversion_time = datetime.datetime.strptime(datetime.datetime.now(tzinfo=source_timezone))
-            target_time = conversion_time.astimezone(target_timezone).time()
-            await ctx.respond(f"{target_time.strftime('`%H:%M`/`%I:%M %p`')} for {ctx.user.display_name} -> {target_time.strftime('`%H:%M`/`%I:%M %p`')} for {user.display_name}")
+                await ctx.respond("Target user does not have a timezone registered.")
         else:
-            await ctx.respond("Target user does not have a timezone registered.")
-    else:
-        await ctx.respond("Target user does not have a timezone registered. (Does not exist in database)")
+            await ctx.respond("Target user does not have a timezone registered. (Does not exist in database)")
 
 
 create_tables()
