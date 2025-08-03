@@ -877,6 +877,7 @@ async def nvm_func(ctx: SlashContext, which: int):
         else:
             await update_subscriptions(conn, ctx.user.id, funnies=True)
             await ctx.respond('Ok, re-enabling funny stuff from me only. :3', ephemeral=True)
+        await conn.commit()
 
 
 @slash_command(
@@ -895,18 +896,20 @@ async def nvm_func(ctx: SlashContext, which: int):
     ]
 )
 async def shutup_func(ctx: SlashContext, which: int):
-    try:
-        if which == 0:
-            await update_subscriptions(conn, ctx.user.id, funnies=False, shutup=True)
-            await ctx.respond('Ok, disabling all nonsense.', ephemeral=True)
-        elif which == 1:
-            await update_subscriptions(conn, ctx.user.id, shutup=True)
-            await ctx.respond('Ok, disabling nonsense from users only.', ephemeral=True)
-        else:
-            await update_subscriptions(conn, ctx.user.id, funnies=False)
-            await ctx.respond('Ok, disabling nonsense from me only.', ephemeral=True)
-    except:
-        await ctx.respond("Failed to process your request!! This is a bug, please contact my dev! (@ureverydaybagelboi)")
+    async with aiosqlite.connect(database) as conn:
+        try:
+            if which == 0:
+                await update_subscriptions(conn, ctx.user.id, funnies=False, shutup=True)
+                await ctx.respond('Ok, disabling all nonsense.', ephemeral=True)
+            elif which == 1:
+                await update_subscriptions(conn, ctx.user.id, shutup=True)
+                await ctx.respond('Ok, disabling nonsense from users only.', ephemeral=True)
+            else:
+                await update_subscriptions(conn, ctx.user.id, funnies=False)
+                await ctx.respond('Ok, disabling nonsense from me only.', ephemeral=True)
+            await conn.commit()
+        except:
+            await ctx.respond("Failed to process your request!! This is a bug, please contact my dev so this may be resolved manually! (@ureverydaybagelboi)")
 
 
 @slash_command(
@@ -939,77 +942,73 @@ async def shutup_func(ctx: SlashContext, which: int):
     autocomplete=True
 )
 async def gotosleep_func(ctx: SlashContext, user: User | Member, time: str, message: str = None, timezone: str = None):
-    conn = await aiosqlite.connect(database)
-    response = ""
-    try:
-        if await is_subscribed(conn, user.id, 'shutup'):
-            await ctx.send(f"{user.display_name} told me to shut so uhh... no can do. :3")
-            return
-
+    async with aiosqlite.connect(database) as conn:
+        response = ""
         try:
-            _ = datetime.datetime.strptime(time, '%H:%M')
-            logging.info(f'gotosleep_func(): Time {time} was considered valid.')
-        except ValueError:
-            await ctx.send(f"Time `{time}` isn't formatted correctly.\n-# The format is a 24-hour time divided by a semicolon (':'), like this: `[HOUR]:[MINUTE]`")
-            return
-
-        # timezone register logic
-        try:
-            registered_timezone = await get_user_data(conn, user.id, 'timezone')
-            if timezone is not None: # if timezone specified
-                if registered_timezone is None: # and no timezone registered: consider timezone input
-                    if timezone not in available_timezones: # timezone not valid
-                        await ctx.send(f"Invalid timezone: {timezone}")
-                        return
-                    await update_user(conn, user.id, timezone=timezone) # update timezone
-                    await conn.commit()
-                    logging.info(f"gotosleep: Attempted to update timezone to {timezone} for user {user}")
-                else: # there is a timezone registered
-                    if registered_timezone not in available_timezones: # existing timezone invalid
-                        response += f'''
-                        \n
-                        {user.global_name} had invalid timezone {registered_timezone} registered somehow...?
-                        > uh-oh,,, that really shouldn't have happened... please report this to my developer :,3\n\n
-                        '''
-                        logging.error(f"gotosleep_func(): user {user.global_name} apparently had invalid timezone registered: {registered_timezone}")
-                        if timezone in available_timezones: # provided timezone is valid
-                            response += f"Attempting to set timezone to {timezone}\n"
-                            await update_user(conn, user.id, timezone=timezone)
-                            await conn.commit()
-                            logging.info(f"gotosleep: Attempted to update timezone to {timezone} for user {user}")
-
-                        else:
-                            response += (f"Specified timezone isn't valid either dumdum!!")
-                            await ctx.send(response)
-                            return
-                    else:
-                        response += (f"User already had timezone `{registered_timezone}` registered. Using that instead.\n")
-            elif registered_timezone is None:
-                await ctx.send(f"User does not have a timezone registered, nor was one specified.")
+            if await is_subscribed(conn, user.id, 'shutup'):
+                await ctx.send(f"{user.display_name} told me to shut up so uhh... no can do. :3")
                 return
+            try:
+                _ = datetime.datetime.strptime(time, '%H:%M')
+                logging.info(f'gotosleep_func(): Time {time} was considered valid.')
+            except ValueError:
+                await ctx.send(f"Time `{time}` isn't formatted correctly.\n-# The format is a 24-hour time divided by a semicolon (':'), like this: `[HOUR]:[MINUTE]`")
+                return
+
+            # timezone register logic
+            try:
+                registered_timezone = await get_user_data(conn, user.id, 'timezone')
+                if timezone is not None: # if timezone specified
+                    if registered_timezone is None: # and no timezone registered: consider timezone input
+                        if timezone not in available_timezones: # timezone not valid
+                            await ctx.send(f"Invalid timezone: {timezone}")
+                            return
+                        await update_user(conn, user.id, timezone=timezone) # update timezone
+                        await conn.commit()
+                        logging.info(f"gotosleep: Attempted to update timezone to {timezone} for user {user}")
+                    else: # there is a timezone registered
+                        if registered_timezone not in available_timezones: # existing timezone invalid
+                            response += "{user.global_name} had invalid timezone `{registered_timezone}` registered somehow...?"
+                            "> uh-oh,,, that really shouldn't have happened... please report this to my developer :,3\n\n"
+                            logging.error(f"gotosleep_func(): user {user.global_name} apparently had invalid timezone registered: {registered_timezone}")
+                            if timezone in available_timezones: # provided timezone is valid
+                                response += f"Attempting to set timezone to {timezone}\n"
+                                await update_user(conn, user.id, timezone=timezone)
+                                await conn.commit()
+                                logging.info(f"gotosleep: Attempted to update timezone to {timezone} for user {user}")
+
+                            else:
+                                response += (f"Specified timezone isn't valid either dumdum!!")
+                                await ctx.send(response)
+                                return
+                        else:
+                            response += (f"User already had timezone `{registered_timezone}` registered. Using that instead.\n\n")
+                if registered_timezone is None:
+                    await ctx.send(f"User does not have a timezone registered, nor was one specified.")
+                    return
+            except aiosqlite.Error as e:
+                await conn.rollback()
+                logging.error(f"gotosleep_func() failed to set timezone: {e}")
+
+            public_timezone = timezone_to_utc(registered_timezone) if registered_timezone else "Unknown"
+            try:
+                await update_user(conn, user.id, bedtime_time=time, bedtime_message=message, bedtime_applicant=ctx.user.id)
+                await update_subscriptions(conn, user.id, bedtime=True)
+            except aiosqlite.Error as e:
+                await conn.rollback()
+                logging.error(f"gotosleep_func() failed to set bedtime data and subscription: {e}")
+
+            response += (
+                f"Registered bedtime for user **{user.global_name}**:\n"
+                f"Bedtime: **`{time}`**\n"
+                f"Bedtime message: ***{message}***\n"
+                f"Bedtime applicant (credited on each reminder sent): **{ctx.user.global_name}**"
+            )
+            await ctx.send(response)
+
         except aiosqlite.Error as e:
             await conn.rollback()
-            logging.error(f"gotosleep_func() failed to set timezone: {e}")
-
-        public_timezone = timezone_to_utc(registered_timezone) if registered_timezone else "Unknown"
-        try:
-            await update_user(conn, user.id, bedtime_time=time, bedtime_message=message, bedtime_applicant=ctx.user.id)
-            await update_subscriptions(conn, user.id, bedtime=True)
-        except aiosqlite.Error as e:
-            await conn.rollback()
-            logging.error(f"gotosleep_func() failed to set bedtime data and subscription: {e}")
-
-        response += (
-            f"Registered bedtime for user **{user.global_name}**:\n"
-            f"Bedtime: **`{time}`**\n"
-            f"Bedtime message: ***'{message}'***\n"
-            f"Bedtime applicant (credited on each reminder sent): **{ctx.user.global_name}**"
-        )
-        await ctx.send(response)
-
-    except aiosqlite.Error as e:
-        await conn.rollback()
-        logging.error(f"           ['gotosleep_func()' ERROR]: {e}")
+            logging.error(f"           ['gotosleep_func()' ERROR]: {e}")
 
 
 @slash_command(
