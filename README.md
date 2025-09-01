@@ -21,7 +21,7 @@ This is ***NOT*** in any way intended to be a serious project, and is purely me 
 ## Planned features
 - Being able to enable or disable features for servers.
 - Many major optimizations I haven't thought of yet (I'm still learning good practices ok...)
-- Whatever you can think of! Feel free to send ideas to @ureverydaybagelboi on Discord over DMs :)
+- Whatever you can think of! Feel free to send ideas to @ureverydaybagelboi on Discord over DMs :) Please send a message request via a server and tell me you're from here. I'm in the big Python Discord and the one for interactions.py. I ignore random friend requests since there's plenty of scammers around :P
 
 ## Setup
 
